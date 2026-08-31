@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "migrate"
+version = "0.1.0"
+description = "Единственное приложение, которое меняет схему PostgreSQL/PostGIS"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.13",
+    "sqlalchemy>=2.0",
+    "geoalchemy2>=0.14",
+    "psycopg[binary]>=3.1",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "click>=8.1",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+migrate = "migrate.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+migrate = ["static/*"]

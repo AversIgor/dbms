@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from migrate import __version__
+from migrate.schema import inspect_schema, revision_history
+from migrate.state import last_upgrade
+
+STATIC = Path(__file__).resolve().parent / "static"
+
+app = FastAPI(title="migrate", version=__version__)
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+def ready():
+    info = inspect_schema()
+    if info["database"] and info["in_sync"] and info["revision"]:
+        return {"ok": True, "revision": info["revision"]}
+    return JSONResponse(
+        status_code=503,
+        content={
+            "ok": False,
+            "revision": info["revision"],
+            "head": info["head"],
+            "error": info["error"],
+        },
+    )
+
+
+@app.get("/schema")
+def schema():
+    info = inspect_schema()
+    if info["database"] and info["in_sync"] and info["revision"]:
+        return {
+            "revision": info["revision"],
+            "head": info["head"],
+            "postgis": info["postgis"],
+        }
+    return JSONResponse(
+        status_code=503,
+        content={
+            "revision": info["revision"],
+            "head": info["head"],
+            "postgis": info["postgis"],
+            "error": info["error"],
+        },
+    )
+
+
+@app.get("/status")
+def status() -> dict:
+    info = inspect_schema()
+    upgrade = last_upgrade()
+    return {
+        "process": "alive",
+        "database": info["database"],
+        "revision": info["revision"],
+        "head": info["head"],
+        "in_sync": info["in_sync"],
+        "postgis": info["postgis"],
+        "error": info["error"],
+        "last_upgrade": {
+            "ok": upgrade.ok,
+            "message": upgrade.message,
+            "at": upgrade.at,
+            "revision": upgrade.revision,
+        },
+        "history": revision_history(),
+    }
+
+
+if STATIC.is_dir():
+    app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")

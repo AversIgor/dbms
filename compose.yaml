@@ -1,0 +1,83 @@
+services:
+  db:
+    image: postgis/postgis:16-3.5
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  migrate:
+    build: ./migrate
+    env_file: .env
+    environment:
+      # В сети Compose Postgres доступен как сервис db на 5432, не как localhost хоста.
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      MIGRATE_PORT: "8080"
+    ports:
+      - "${MIGRATE_PORT}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready')",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    # Не масштабировать: параллельный upgrade не запускать.
+    deploy:
+      replicas: 1
+
+  fgislk:
+    profiles: ["container"]
+    image: dbms-fgislk
+    build: ./fgislk
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      MIGRATE_URL: http://migrate:8080
+      FGISLK_PORT: "8081"
+      FGIS_TLS: openssl
+    ports:
+      - "${FGISLK_PORT:-8081}:8081"
+    depends_on:
+      migrate:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/ready')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+
+volumes:
+  pgdata:
