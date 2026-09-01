@@ -6,7 +6,6 @@ def panel_manifest() -> dict:
         "id": "migrate",
         "title": "migrate",
         "status": {"path": "/status", "label": "Версия СУБД"},
-        "schema": {"path": "/schema"},
         "actions": [],
         "tables": [],
     }

@@ -24,8 +24,8 @@
 ## Интерфейсы
 
 - **Postgres:** `POSTGRES_*` из `.env` (права DDL). Другие процессы не ходят сюда за DDL.
-- **HTTP:** `/health` (жив), `/ready` (БД есть и `revision == head`, иначе 503), `/schema`, `/status`, `GET /panel` (манифест для admin, без action upgrade), `GET /settings` (`writable: false`).
-- **admin:** чтение `/panel`, `/status`, `/schema`; upgrade из UI нет.
+- **HTTP:** `/health` (жив), `/ready` (БД есть и `revision == head`, иначе 503), `/status`, `GET /panel` (манифест для admin, без action upgrade), `GET /settings` (`writable: false`). Нет HTML-страницы схемы.
+- **admin:** чтение `/panel`, `/status`; upgrade из UI нет.
 - **Потребители:** `GET {MIGRATE_URL}/ready` + свой `REQUIRED_SCHEMA`; несовпадение revision — не стартовать.
 
 ## Архитектура решения

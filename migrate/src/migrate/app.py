@@ -1,17 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from migrate import __version__
 from migrate.panel import panel_manifest
 from migrate.schema import inspect_schema, revision_history
 from migrate.state import last_upgrade
-
-STATIC = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(title="migrate", version=__version__)
 
@@ -32,26 +27,6 @@ def ready():
             "ok": False,
             "revision": info["revision"],
             "head": info["head"],
-            "error": info["error"],
-        },
-    )
-
-
-@app.get("/schema")
-def schema():
-    info = inspect_schema()
-    if info["database"] and info["in_sync"] and info["revision"]:
-        return {
-            "revision": info["revision"],
-            "head": info["head"],
-            "postgis": info["postgis"],
-        }
-    return JSONResponse(
-        status_code=503,
-        content={
-            "revision": info["revision"],
-            "head": info["head"],
-            "postgis": info["postgis"],
             "error": info["error"],
         },
     )
@@ -87,7 +62,3 @@ def panel() -> dict:
 @app.get("/settings")
 def settings() -> dict:
     return {"writable": False, "values": {}}
-
-
-if STATIC.is_dir():
-    app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")
