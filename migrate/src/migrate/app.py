@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from migrate import __version__
+from migrate.panel import panel_manifest
 from migrate.schema import inspect_schema, revision_history
 from migrate.state import last_upgrade
 
@@ -76,6 +77,16 @@ def status() -> dict:
         },
         "history": revision_history(),
     }
+
+
+@app.get("/panel")
+def panel() -> dict:
+    return panel_manifest()
+
+
+@app.get("/settings")
+def settings() -> dict:
+    return {"writable": False, "values": {}}
 
 
 if STATIC.is_dir():

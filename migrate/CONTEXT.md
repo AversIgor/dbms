@@ -8,7 +8,7 @@
 
 ## Требования
 
-- Схема меняется только здесь. `api` / `fgislk` Alembic не вызывают.
+- Схема меняется только здесь. `fgislk` Alembic не вызывает.
 - Смена структуры (`models.py`, `alembic/versions/`, расширения) в том же изменении обновляет [`schema.md`](schema.md).
 - Compose: `db` healthy → этот процесс (`serve --upgrade`) → потребители. `upgrade head`, затем HTTP.
 - Одна реплика; параллельный `upgrade` запрещён.
@@ -23,8 +23,9 @@
 
 ## Интерфейсы
 
-- **Postgres:** `POSTGRES_*` из `.env` (права DDL). `web` сюда не ходит.
-- **HTTP:** `/health` (жив), `/ready` (БД есть и `revision == head`, иначе 503), `/schema`, `/status`.
+- **Postgres:** `POSTGRES_*` из `.env` (права DDL). Другие процессы не ходят сюда за DDL.
+- **HTTP:** `/health` (жив), `/ready` (БД есть и `revision == head`, иначе 503), `/schema`, `/status`, `GET /panel` (манифест для admin, без action upgrade), `GET /settings` (`writable: false`).
+- **admin:** чтение `/panel`, `/status`, `/schema`; upgrade из UI нет.
 - **Потребители:** `GET {MIGRATE_URL}/ready` + свой `REQUIRED_SCHEMA`; несовпадение revision — не стартовать.
 
 ## Архитектура решения

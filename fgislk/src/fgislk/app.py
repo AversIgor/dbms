@@ -2,42 +2,49 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import date
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
 from fgislk import __version__
 from fgislk.gate import migrate_ready, wait_schema
-from fgislk.settings import REQUIRED_SCHEMA
+from fgislk.panel import panel_manifest
+from fgislk.settings import DATA_KIND, REQUIRED_SCHEMA, apply_settings, settings_view
 from fgislk.spd import SpdClient
-from fgislk.store import db_revision, make_engine, overlay_status, status_rows
+from fgislk.store import (
+    db_revision,
+    history_rows,
+    make_engine,
+    overlay_status,
+    status_day_meta,
+    status_rows,
+)
 from fgislk.sync import (
-    JobSet,
     RunningSet,
     daily_loop,
     run_subjects,
+    stop_import,
 )
-from fgislk.windows import normalize_subject, parse_audit_day
-
-_jobs: JobSet = JobSet()
+from fgislk.windows import AUDIT_START, moscow_today, normalize_subject, parse_audit_day
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     engine = make_engine()
     running = RunningSet()
-    jobs = JobSet()
     await wait_schema(engine)
     stop = asyncio.Event()
-    daily = asyncio.create_task(daily_loop(engine, running, stop, jobs))
+    kick = asyncio.Event()
+    daily = asyncio.create_task(daily_loop(engine, running, stop, kick))
     app.state.engine = engine
     app.state.running = running
-    app.state.jobs = jobs
     app.state.stop = stop
+    app.state.kick = kick
     app.state.daily = daily
     yield
     stop.set()
-    jobs.cancel_all()
+    running.cancel_tasks()
     daily.cancel()
     engine.dispose()
 
@@ -49,9 +56,11 @@ def _truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _jobs_of() -> JobSet:
-    jobs = getattr(app.state, "jobs", None)
-    return jobs if jobs is not None else _jobs
+def _running_of() -> RunningSet:
+    running = getattr(app.state, "running", None)
+    if running is None:
+        raise RuntimeError("fgislk не запущен")
+    return running
 
 
 @app.get("/health")
@@ -81,22 +90,102 @@ async def ready():
     return JSONResponse(status_code=503, content=body)
 
 
+@app.get("/panel")
+def panel() -> dict:
+    return panel_manifest()
+
+
+@app.get("/history")
+def history(
+    subject: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    code = None
+    if subject is not None and subject.strip() != "":
+        try:
+            code = normalize_subject(subject)
+        except ValueError as exc:
+            return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    engine = app.state.engine
+    return {"rows": history_rows(engine, subject=code, limit=limit)}
+
+
+@app.get("/settings")
+def get_settings() -> dict:
+    return settings_view()
+
+
+@app.put("/settings")
+async def put_settings(request: Request):
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse(
+            status_code=400, content={"ok": False, "error": "нужен JSON"}
+        )
+    try:
+        return apply_settings(payload)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
 @app.get("/status")
-async def status() -> dict:
+async def status(
+    subject: str | None = Query(default=None),
+    data_kind: str | None = Query(default=None),
+    day: str | None = Query(default=None),
+):
     engine = app.state.engine
     running: RunningSet = app.state.running
+    today = moscow_today()
+    if day is None or day.strip() == "":
+        view_day = today
+    else:
+        try:
+            view_day = date.fromisoformat(day.strip())
+        except ValueError:
+            return JSONResponse(
+                status_code=400, content={"ok": False, "error": "day=YYYY-MM-DD"}
+            )
+        if view_day > today:
+            view_day = today
+        if view_day < AUDIT_START:
+            view_day = AUDIT_START
+    code = None
+    if subject is not None and subject.strip() != "":
+        try:
+            code = normalize_subject(subject)
+        except ValueError as exc:
+            return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    kind = (data_kind or "").strip() or None
     revision = db_revision(engine)
     jobs = await running.snapshot()
-    subjects = overlay_status(status_rows(engine), jobs)
-    return {
+    if code is not None:
+        jobs = [job for job in jobs if job["subject"] == code]
+    if kind is not None:
+        jobs = [
+            job
+            for job in jobs
+            if (job.get("data_kind") or DATA_KIND) == kind
+        ]
+    subjects = overlay_status(
+        status_rows(engine, day=view_day, subject=code, data_kind=kind),
+        jobs,
+        view_day=view_day,
+        today=today,
+    )
+    live = [row for row in subjects if row["in_progress"]]
+    body = {
         "process": "alive",
         "version": __version__,
         "alembic_revision": revision,
         "required_schema": REQUIRED_SCHEMA,
         "running": [job["subject"] for job in jobs],
-        "updated_count_total": sum(row["updated_count"] for row in subjects),
+        "updated_count_total": sum(row["updated_count"] for row in live),
         "subjects": subjects,
     }
+    body.update(status_day_meta(view_day, today))
+    return body
 
 
 @app.get("/sync")
@@ -133,7 +222,7 @@ async def sync(
                 status_code=400,
                 content={"ok": False, "error": "stop без subject="},
             )
-        cancelled = _jobs_of().cancel_all()
+        cancelled = await stop_import(_running_of())
         return {"ok": True, "stopped": True, "cancelled": cancelled}
 
     audit_from = None
@@ -161,11 +250,22 @@ async def sync(
             status_code=409,
             content={"ok": False, "error": f"импорт субъекта {codes[0]} уже идёт"},
         )
-    if not require_lock and live:
+    if not require_lock and await running.inflight():
         return JSONResponse(
             status_code=409,
             content={"ok": False, "error": "импорт уже идёт; GET /sync?stop=1"},
         )
+
+    started = {
+        "ok": True,
+        "audit": want_audit,
+        "day": audit_from.isoformat() if audit_from is not None else None,
+        "subjects": codes if codes is not None else "01-99",
+    }
+    if want_start and codes is None:
+        kick: asyncio.Event = app.state.kick
+        kick.set()
+        return JSONResponse(status_code=202, content=started)
 
     engine = app.state.engine
 
@@ -184,13 +284,5 @@ async def sync(
         finally:
             await spd.aclose()
 
-    _jobs_of().track(asyncio.create_task(job()))
-    return JSONResponse(
-        status_code=202,
-        content={
-            "ok": True,
-            "audit": want_audit,
-            "day": audit_from.isoformat() if audit_from is not None else None,
-            "subjects": codes if codes is not None else "01-99",
-        },
-    )
+    running.track(asyncio.create_task(job()))
+    return JSONResponse(status_code=202, content=started)

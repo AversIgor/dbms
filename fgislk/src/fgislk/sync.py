@@ -9,7 +9,7 @@ from sqlalchemy.engine import Engine
 
 from fgislk.mapper import row_from_payload
 from fgislk.settings import max_workers
-from fgislk.spd import SpdClient, SpdError
+from fgislk.spd import SpdClient, SpdError, kill_all_curl
 from fgislk.store import (
     last_ok_day,
     recent_read_ids,
@@ -38,16 +38,29 @@ class AlreadyRunning(Exception):
         self.subject = subject
 
 
-class JobSet:
+class RunningSet:
     def __init__(self) -> None:
+        self._jobs: dict[str, dict[str, Any]] = {}
         self._tasks: set[asyncio.Task] = set()
+        self._lock = asyncio.Lock()
+        self._halted = False
+        self._generation = 0
+
+    def halted(self) -> bool:
+        return self._halted
+
+    def same_gen(self, gen: int) -> bool:
+        return gen == self._generation
+
+    def reset(self) -> None:
+        self._halted = False
 
     def track(self, task: asyncio.Task) -> asyncio.Task:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return task
 
-    def cancel_all(self) -> int:
+    def cancel_tasks(self) -> int:
         n = 0
         for task in list(self._tasks):
             if not task.done():
@@ -55,18 +68,25 @@ class JobSet:
                 n += 1
         return n
 
+    async def drain(self) -> None:
+        tasks = [task for task in list(self._tasks) if not task.done()]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-class RunningSet:
-    def __init__(self) -> None:
-        self._jobs: dict[str, dict[str, Any]] = {}
-        self._lock = asyncio.Lock()
-
-    async def claim(self, subject: str, **info: Any) -> bool:
+    async def halt(self) -> list[str]:
         async with self._lock:
-            if subject in self._jobs:
-                return False
-            self._jobs[subject] = dict(info)
-            return True
+            self._halted = True
+            self._generation += 1
+            codes = sorted(self._jobs)
+            self._jobs.clear()
+            return codes
+
+    async def claim(self, subject: str, **info: Any) -> int | None:
+        async with self._lock:
+            if self._halted or subject in self._jobs:
+                return None
+            self._jobs[subject] = {**info, "_gen": self._generation}
+            return self._generation
 
     async def update(self, subject: str, **fields: Any) -> None:
         async with self._lock:
@@ -74,18 +94,32 @@ class RunningSet:
             if current is not None:
                 current.update(fields)
 
-    async def release(self, subject: str) -> None:
+    async def release(self, subject: str, gen: int | None = None) -> None:
         async with self._lock:
+            current = self._jobs.get(subject)
+            if current is None:
+                return
+            if gen is not None and current.get("_gen") != gen:
+                return
             self._jobs.pop(subject, None)
 
     async def codes(self) -> list[str]:
         async with self._lock:
             return sorted(self._jobs)
 
+    async def inflight(self) -> bool:
+        async with self._lock:
+            if self._jobs:
+                return True
+        return any(not task.done() for task in list(self._tasks))
+
     async def snapshot(self) -> list[dict[str, Any]]:
         async with self._lock:
             return [
-                {"subject": code, **dict(data)}
+                {
+                    "subject": code,
+                    **{k: v for k, v in data.items() if k != "_gen"},
+                }
                 for code, data in sorted(self._jobs.items())
             ]
 
@@ -100,15 +134,10 @@ async def run_subject(
     require_lock: bool,
     audit_from: date | None = None,
 ) -> str:
-    if not await running.claim(
-        subject, mode="audit" if audit else "incremental"
-    ):
-        if require_lock:
-            raise AlreadyRunning(subject)
-        return "busy"
     conn = engine.connect()
     period_start: date | None = None
     period_end: date | None = None
+    gen: int | None = None
     try:
         if not try_lock_subject(conn, subject):
             if require_lock:
@@ -124,11 +153,18 @@ async def run_subject(
                 return "skip"
             start, end = window
             period_start, period_end = start, end
-            await running.update(
+            gen = await running.claim(
                 subject,
+                mode="audit" if audit else "incremental",
                 period_start=start.isoformat(),
                 period_end=end.isoformat(),
+                updated_count=0,
             )
+            if gen is None:
+                if require_lock:
+                    raise AlreadyRunning(subject)
+                return "busy"
+            history_day = end if audit else yesterday(today)
             updated = await _import_window(
                 conn,
                 spd,
@@ -137,14 +173,18 @@ async def run_subject(
                 end,
                 shrink=audit,
                 running=running,
+                gen=gen,
                 commit_every=UPSERT_BATCH if audit else None,
                 skip_fresh=audit,
                 read_at=today,
+                history_day=history_day,
             )
+            if not running.same_gen(gen) or running.halted():
+                return "stopped"
             write_history(
                 conn,
                 subject=subject,
-                day=end if audit else yesterday(today),
+                day=history_day,
                 result="ok",
                 updated_count=updated,
                 error=None,
@@ -152,18 +192,34 @@ async def run_subject(
                 period_end=end,
             )
             return "ok"
+        except asyncio.CancelledError:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
         except Exception as exc:
             try:
                 conn.rollback()
             except Exception:
                 pass
+            if gen is not None and (
+                not running.same_gen(gen) or running.halted()
+            ):
+                return "stopped"
             try:
+                n = 0
+                if gen is not None:
+                    for job in await running.snapshot():
+                        if job["subject"] == subject:
+                            n = int(job.get("updated_count") or 0)
+                            break
                 write_history(
                     conn,
                     subject=subject,
                     day=period_end if period_end is not None else _window_end(audit),
                     result="error",
-                    updated_count=0,
+                    updated_count=n,
                     error=str(exc)[:2000],
                     period_start=period_start,
                     period_end=period_end,
@@ -181,7 +237,8 @@ async def run_subject(
                 log.exception("не сняли lock субъекта %s", subject)
     finally:
         conn.close()
-        await running.release(subject)
+        if gen is not None:
+            await running.release(subject, gen)
 
 
 def _window_end(audit: bool) -> date:
@@ -200,20 +257,28 @@ async def _import_window(
     *,
     shrink: bool,
     running: RunningSet,
+    gen: int,
     commit_every: int | None = None,
     skip_fresh: bool = False,
     read_at: date | None = None,
+    history_day: date | None = None,
 ) -> int:
     async def on_window(query_start: date, query_end: date) -> None:
+        if not running.same_gen(gen) or running.halted():
+            raise asyncio.CancelledError
         await running.update(
             subject,
             period_start=query_start.isoformat(),
             period_end=query_end.isoformat(),
         )
 
+    if not running.same_gen(gen) or running.halted():
+        raise asyncio.CancelledError
     ids = await spd.changed_ids(
         subject, start, end, shrink=shrink, on_window=on_window
     )
+    if not running.same_gen(gen) or running.halted():
+        raise asyncio.CancelledError
     today = read_at or moscow_today()
     to_fetch = ids
     skipped = 0
@@ -236,6 +301,8 @@ async def _import_window(
     pending = 0
     step = commit_every or UPSERT_BATCH
     for offset in range(0, len(to_fetch), step):
+        if not running.same_gen(gen) or running.halted():
+            raise asyncio.CancelledError
         await asyncio.sleep(0)
         chunk = to_fetch[offset : offset + step]
         try:
@@ -255,10 +322,59 @@ async def _import_window(
             conn.commit()
             pending = 0
             await running.update(subject, updated_count=upserted)
+            if history_day is not None:
+                write_history(
+                    conn,
+                    subject=subject,
+                    day=history_day,
+                    result="partial",
+                    updated_count=upserted,
+                    error=None,
+                    period_start=start,
+                    period_end=end,
+                )
     if pending or commit_every is None:
         conn.commit()
     await running.update(subject, updated_count=upserted)
-    return fgis_count
+    return upserted
+
+
+async def stop_import(running: RunningSet) -> int:
+    codes = await running.halt()
+    cancelled = running.cancel_tasks()
+    kill_all_curl()
+    await running.drain()
+    return max(len(codes), cancelled)
+
+
+async def _wait_next_run(
+    stop: asyncio.Event,
+    kick: asyncio.Event,
+    timeout: float,
+) -> bool:
+    """True — полуночь или start=1; False — выключение процесса."""
+    if stop.is_set():
+        return False
+    if kick.is_set():
+        return True
+    stop_task = asyncio.create_task(stop.wait())
+    kick_task = asyncio.create_task(kick.wait())
+    try:
+        _done, pending = await asyncio.wait(
+            {stop_task, kick_task},
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        return not stop.is_set()
+    except asyncio.CancelledError:
+        stop_task.cancel()
+        kick_task.cancel()
+        await asyncio.gather(stop_task, kick_task, return_exceptions=True)
+        raise
 
 
 async def run_subjects(
@@ -271,6 +387,7 @@ async def run_subjects(
     require_lock: bool,
     audit_from: date | None = None,
 ) -> None:
+    running.reset()
     targets = subjects if subjects is not None else all_subjects()
     semaphore = asyncio.Semaphore(max_workers())
 
@@ -286,14 +403,14 @@ async def run_subjects(
                 audit_from=audit_from,
             )
 
-    results = await asyncio.gather(
-        *(one(code) for code in targets),
-        return_exceptions=True,
-    )
+    tasks = [running.track(asyncio.create_task(one(code))) for code in targets]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
     for item in results:
         if isinstance(item, AlreadyRunning) and require_lock and len(targets) == 1:
             raise item
-        if isinstance(item, Exception) and not isinstance(item, AlreadyRunning):
+        if isinstance(item, BaseException) and not isinstance(
+            item, (AlreadyRunning, asyncio.CancelledError)
+        ):
             log.exception("фоновый импорт", exc_info=item)
 
 
@@ -301,11 +418,22 @@ async def daily_loop(
     engine: Engine,
     running: RunningSet,
     stop: asyncio.Event,
-    jobs: JobSet,
+    kick: asyncio.Event,
 ) -> None:
     from fgislk.windows import seconds_until_moscow_midnight
 
+    first = True
     while not stop.is_set():
+        if not first:
+            if not kick.is_set() and not stop.is_set():
+                if not await _wait_next_run(
+                    stop, kick, seconds_until_moscow_midnight()
+                ):
+                    return
+        first = False
+        kick.clear()
+        if await running.inflight():
+            continue
         try:
 
             async def once() -> None:
@@ -322,7 +450,7 @@ async def daily_loop(
                 finally:
                     await spd.aclose()
 
-            task = jobs.track(asyncio.create_task(once()))
+            task = running.track(asyncio.create_task(once()))
             try:
                 await task
             except asyncio.CancelledError:
@@ -332,9 +460,3 @@ async def daily_loop(
                 log.info("ежедневный импорт остановлен")
         except Exception:
             log.exception("ежедневный импорт")
-        try:
-            await asyncio.wait_for(
-                stop.wait(), timeout=seconds_until_moscow_midnight()
-            )
-        except TimeoutError:
-            continue

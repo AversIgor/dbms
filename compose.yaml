@@ -47,6 +47,34 @@ services:
     deploy:
       replicas: 1
 
+  admin:
+    build: ./admin
+    env_file: .env
+    environment:
+      ADMIN_PORT: "8082"
+      MIGRATE_URL: http://migrate:8080
+      FGISLK_URL: ${FGISLK_URL:-http://host.docker.internal:8081}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${ADMIN_PORT:-8082}:8082"
+    depends_on:
+      migrate:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+    restart: unless-stopped
+
   fgislk:
     profiles: ["container"]
     image: dbms-fgislk

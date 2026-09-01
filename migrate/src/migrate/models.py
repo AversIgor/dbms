@@ -43,6 +43,9 @@ class TaxationPiece(Base):
     read_at: Mapped[date | None] = mapped_column(
         Date, comment="дата чтения из СПД"
     )
+    actuality_date: Mapped[date | None] = mapped_column(
+        Date, comment="дата актуальности (появление в ФГИС ЛК)"
+    )
     geom: Mapped[object | None] = mapped_column(
         Geometry(geometry_type="GEOMETRY", spatial_index=False),
         comment="контур",

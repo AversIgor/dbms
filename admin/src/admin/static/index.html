@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Разделы — admin</title>
+  <style>
+    :root {
+      --bg: #f4f1ea;
+      --ink: #1c241c;
+      --muted: #5c6758;
+      --card: #fffdf8;
+      --line: #d5d0c4;
+      --ok: #2f6b3a;
+      --ok-bg: #e4f0e4;
+      --bad: #8b2e2e;
+      --bad-bg: #f6e4e4;
+      --wait: #6b5a2f;
+      --wait-bg: #f3ecd8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 16px/1.45 "Segoe UI", system-ui, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+    }
+    header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--line);
+      background: var(--card);
+    }
+    h1 { margin: 0; font-size: 1.15rem; font-weight: 650; }
+    header p { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.9rem; }
+    main { padding: 1.5rem; display: grid; gap: 1rem; }
+    section.card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 1rem 1.1rem;
+    }
+    section.card h2 {
+      margin: 0 0 0.6rem;
+      font-size: 1.05rem;
+    }
+    .pill {
+      display: inline-block;
+      padding: 0.1rem 0.5rem;
+      border-radius: 999px;
+      font-size: 0.85rem;
+      margin-left: 0.4rem;
+    }
+    .ok { background: var(--ok-bg); color: var(--ok); }
+    .bad { background: var(--bad-bg); color: var(--bad); }
+    .wait { background: var(--wait-bg); color: var(--wait); }
+    .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end; margin: 0.5rem 0; }
+    label { font-size: 0.8rem; color: var(--muted); display: flex; flex-direction: column; gap: 0.15rem; }
+    input, button, select {
+      font: inherit;
+      padding: 0.25rem 0.5rem;
+    }
+    button { cursor: pointer; }
+    button:disabled { cursor: default; opacity: 0.45; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.85rem; margin-top: 0.4rem; }
+    th, td { border: 1px solid var(--line); padding: 0.25rem 0.4rem; text-align: left; vertical-align: top; }
+    tr.running { background: var(--ok-bg); }
+    .pager { display: flex; align-items: center; gap: 0.35rem; }
+    pre {
+      margin: 0.5rem 0 0;
+      padding: 0.6rem 0.7rem;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: auto;
+      font-size: 0.75rem;
+      max-height: 16rem;
+    }
+    .muted { color: var(--muted); font-size: 0.9rem; }
+    .block { margin-top: 0.9rem; }
+    .block h3 {
+      margin: 0 0 0.35rem;
+      font-size: 0.75rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Разделы системы</h1>
+    <p>Витрина HTTP процессов.</p>
+  </header>
+  <main id="root"></main>
+  <script>
+    const root = document.getElementById("root");
+
+    function pill(ok, text) {
+      const cls = ok === true ? "ok" : ok === false ? "bad" : "wait";
+      return `<span class="pill ${cls}">${esc(text)}</span>`;
+    }
+
+    function esc(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function fieldInput(field) {
+      const name = esc(field.name);
+      const req = field.optional ? "" : "required";
+      if (field.type === "select") {
+        const opts = (field.options || []).map((opt) => {
+          const v = typeof opt === "object" ? opt.value : opt;
+          const lab = typeof opt === "object" ? (opt.label || v) : opt;
+          const sel = String(field.value ?? "") === String(v) ? "selected" : "";
+          return `<option value="${esc(v)}" ${sel}>${esc(lab)}</option>`;
+        }).join("");
+        return `<label>${esc(field.label || field.name)}<select name="${name}" ${req}>${opts}</select></label>`;
+      }
+      const type = field.type === "date" ? "date" : field.type === "int" ? "number" : "text";
+      const val = field.value != null && field.value !== "" ? `value="${esc(field.value)}"` : "";
+      return `<label>${esc(field.label || field.name)}<input name="${name}" type="${type}" ${val} ${req}></label>`;
+    }
+
+    function cellText(col, row) {
+      const val = row[col.name];
+      if (typeof val === "boolean") return val ? "да" : "";
+      if (val && typeof val === "object") return JSON.stringify(val);
+      return val;
+    }
+
+    function tableHtml(rows, columns, highlight) {
+      if (!rows || !rows.length) return `<p class="muted">пусто</p>`;
+      const cols = columns && columns.length
+        ? columns
+        : Object.keys(rows[0]).map((k) => ({ name: k, label: k }));
+      const head = cols.map((c) => `<th>${esc(c.label || c.name)}</th>`).join("");
+      const field = highlight && highlight.field;
+      const cls = (highlight && highlight.class) || "running";
+      const body = rows.map((row) => {
+        const on = field ? Boolean(row[field]) : false;
+        const cells = cols.map((c) => `<td>${esc(cellText(c, row))}</td>`).join("");
+        return `<tr class="${on ? esc(cls) : ""}">${cells}</tr>`;
+      }).join("");
+      return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    }
+
+    async function fetchJson(url, options) {
+      const res = await fetch(url, options);
+      const text = await res.text();
+      let data;
+      try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+      return { ok: res.ok, status: res.status, data };
+    }
+
+    function buildQuery(action, form) {
+      const params = new URLSearchParams();
+      const query = action.query || {};
+      Object.keys(query).forEach((k) => params.set(k, query[k]));
+      (action.fields || []).forEach((field) => {
+        const input = form.elements[field.name];
+        const value = input ? String(input.value || "").trim() : "";
+        if (value) params.set(field.name, value);
+      });
+      const qs = params.toString();
+      return qs ? `${action.path}?${qs}` : action.path;
+    }
+
+    function renderStub(section) {
+      const el = document.createElement("section");
+      el.className = "card";
+      el.innerHTML = `<h2>${esc(section.title)} ${pill(null, "нет HTTP")}</h2>
+        <p class="muted">${esc(section.stub || "")}</p>`;
+      return el;
+    }
+
+    function renderCard(section) {
+      const el = document.createElement("section");
+      el.className = "card";
+      el.dataset.id = section.id;
+      el.innerHTML = `<h2>${esc(section.title)} ${pill(null, "…")}</h2>
+        <div class="status muted">загрузка</div>
+        <div class="actions block"></div>
+        <div class="tables block"></div>`;
+      return el;
+    }
+
+    function statusQuery(panel, form) {
+      const params = new URLSearchParams();
+      const spec = panel.status || {};
+      (spec.filters || []).forEach((field) => {
+        const input = form && form.elements[field.name];
+        const value = input ? String(input.value || "").trim() : "";
+        if (value) params.set(field.name, value);
+      });
+      const pag = spec.pagination;
+      if (pag && form && form.elements[pag.param]) {
+        const value = String(form.elements[pag.param].value || "").trim();
+        if (value) params.set(pag.param, value);
+      }
+      return params.toString();
+    }
+
+    function mountStatus(card, sectionId, panel) {
+      const spec = panel.status || {};
+      if (!spec.columns) return;
+      const box = card.querySelector(".status");
+      const pag = spec.pagination;
+      const pager = pag
+        ? `<div class="pager">
+             <button type="button" class="prev-day" disabled>←</button>
+             <input type="date" name="${esc(pag.param)}">
+             <button type="button" class="next-day" disabled>→</button>
+           </div>`
+        : "";
+      box.classList.remove("muted");
+      box.innerHTML = `<form class="status-filters row">${(spec.filters || []).map(fieldInput).join("")}
+        ${pager}<button type="submit">Показать</button></form>
+        <div class="status-table muted">загрузка</div>`;
+      const form = box.querySelector("form");
+      form.addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        refreshStatus(card, sectionId, panel);
+      });
+      if (!pag) return;
+      form.querySelector(".prev-day").addEventListener("click", () => {
+        if (!form.dataset.prev) return;
+        form.elements[pag.param].value = form.dataset.prev;
+        refreshStatus(card, sectionId, panel);
+      });
+      form.querySelector(".next-day").addEventListener("click", () => {
+        if (!form.dataset.next) return;
+        form.elements[pag.param].value = form.dataset.next;
+        refreshStatus(card, sectionId, panel);
+      });
+    }
+
+    async function refreshStatus(card, sectionId, panel) {
+      const spec = panel.status || {};
+      const path = spec.path || "/status";
+      const box = card.querySelector(".status");
+      const title = card.querySelector("h2");
+      const form = card.querySelector(".status-filters");
+      const qs = spec.columns ? statusQuery(panel, form) : "";
+      const res = await fetchJson(`/p/${sectionId}${path}${qs ? "?" + qs : ""}`);
+      const ok = res.ok;
+      title.innerHTML = `${esc(card.dataset.title || sectionId)} ${pill(ok, ok ? "жив" : "нет")} `;
+      if (spec.columns) {
+        const rowsKey = spec.rows || "subjects";
+        const rows = res.data && Array.isArray(res.data[rowsKey]) ? res.data[rowsKey] : [];
+        const tableBox = card.querySelector(".status-table");
+        if (tableBox) {
+          tableBox.classList.remove("muted");
+          tableBox.innerHTML = ok ? tableHtml(rows, spec.columns, spec.highlight)
+            : `<p class="muted">процесс недоступен</p>`;
+        }
+        const pag = spec.pagination;
+        if (form && pag && res.data) {
+          const cur = res.data[pag.current];
+          const dayInput = form.elements[pag.param];
+          if (cur && dayInput && document.activeElement !== dayInput) {
+            dayInput.value = cur;
+          }
+          form.dataset.prev = res.data[pag.prev] || "";
+          form.dataset.next = res.data[pag.next] || "";
+          const prevBtn = form.querySelector(".prev-day");
+          const nextBtn = form.querySelector(".next-day");
+          if (prevBtn) prevBtn.disabled = !form.dataset.prev;
+          if (nextBtn) nextBtn.disabled = !form.dataset.next;
+        }
+        return;
+      }
+      if (res.data && Array.isArray(res.data.subjects) && res.data.subjects.length) {
+        box.innerHTML = tableHtml(res.data.subjects);
+      } else if (res.data && res.data.revision) {
+        const num = String(res.data.revision).split("_")[0];
+        const label = spec.label || "Версия СУБД";
+        box.innerHTML = `<p class="muted">${esc(`${label}: ${num}`)}</p>`;
+      } else if (res.data && Array.isArray(res.data.history) && res.data.history.length) {
+        const rows = res.data.history.map((item) =>
+          typeof item === "object" ? item : { revision: item }
+        );
+        box.innerHTML = tableHtml(rows);
+      } else {
+        box.innerHTML = `<pre>${esc(JSON.stringify(res.data, null, 2))}</pre>`;
+      }
+    }
+
+    function mountActions(card, sectionId, panel) {
+      const wrap = card.querySelector(".actions");
+      if (!panel.actions || !panel.actions.length) {
+        wrap.innerHTML = "";
+        return;
+      }
+      wrap.innerHTML = `<h3>Команды</h3>`;
+      panel.actions.forEach((action) => {
+        const form = document.createElement("form");
+        form.className = "row";
+        form.innerHTML = (action.fields || []).map(fieldInput).join("") +
+          `<button type="submit">${esc(action.title || action.id)}</button>
+           <span class="muted result"></span>`;
+        form.addEventListener("submit", async (ev) => {
+          ev.preventDefault();
+          const result = form.querySelector(".result");
+          const rel = buildQuery(action, form);
+          const method = (action.method || "GET").toUpperCase();
+          result.textContent = "…";
+          const res = await fetchJson(`/p/${sectionId}${rel}`, { method });
+          result.textContent = res.ok ? `ok ${res.status}` : `ошибка ${res.status}`;
+          refreshStatus(card, sectionId, panel);
+        });
+        wrap.appendChild(form);
+      });
+    }
+
+    function mountTables(card, sectionId, panel) {
+      const wrap = card.querySelector(".tables");
+      if (!panel.tables || !panel.tables.length) {
+        wrap.innerHTML = "";
+        return;
+      }
+      wrap.innerHTML = "";
+      panel.tables.forEach((table) => {
+        const block = document.createElement("div");
+        const heading = table.title ? `<h3>${esc(table.title)}</h3>` : "";
+        block.innerHTML = heading;
+        const form = document.createElement("form");
+        form.className = "row";
+        form.innerHTML = (table.fields || []).map(fieldInput).join("") +
+          `<button type="submit">Показать: ${esc(table.title || table.id)}</button>`;
+        const out = document.createElement("div");
+        form.addEventListener("submit", async (ev) => {
+          ev.preventDefault();
+          const params = new URLSearchParams();
+          (table.fields || []).forEach((field) => {
+            const input = form.elements[field.name];
+            const value = input ? String(input.value || "").trim() : "";
+            if (value) params.set(field.name, value);
+          });
+          const qs = params.toString();
+          const url = `/p/${sectionId}${table.path}${qs ? "?" + qs : ""}`;
+          const res = await fetchJson(url);
+          const rows = res.data && res.data.rows ? res.data.rows : (Array.isArray(res.data) ? res.data : []);
+          out.innerHTML = tableHtml(rows);
+        });
+        block.appendChild(form);
+        block.appendChild(out);
+        wrap.appendChild(block);
+      });
+    }
+
+    async function boot() {
+      const cat = await fetchJson("/catalog");
+      const sections = (cat.data && cat.data.sections) || [];
+      root.innerHTML = "";
+      for (const section of sections) {
+        if (!section.has_http) {
+          root.appendChild(renderStub(section));
+          continue;
+        }
+        const card = renderCard(section);
+        card.dataset.title = section.title;
+        root.appendChild(card);
+        const panelRes = await fetchJson(`/p/${section.id}/panel`);
+        if (!panelRes.ok || !panelRes.data) {
+          card.querySelector("h2").innerHTML =
+            `${esc(section.title)} ${pill(false, "нет")}`;
+          card.querySelector(".status").textContent = "процесс недоступен";
+          continue;
+        }
+        const panel = panelRes.data;
+        mountActions(card, section.id, panel);
+        mountStatus(card, section.id, panel);
+        mountTables(card, section.id, panel);
+        await refreshStatus(card, section.id, panel);
+        setInterval(() => refreshStatus(card, section.id, panel), 5000);
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>

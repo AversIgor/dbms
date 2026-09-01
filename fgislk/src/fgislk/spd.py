@@ -21,10 +21,35 @@ _STATUS_MARKER = "\n__HTTPSTATUS__"
 CURL_KEEPALIVE_BATCH = 1000
 
 log = logging.getLogger(__name__)
+_active_curl: set[asyncio.subprocess.Process] = set()
+
+
+def kill_all_curl() -> int:
+    n = 0
+    for proc in list(_active_curl):
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                continue
+            n += 1
+    return n
 
 
 class SpdError(Exception):
     pass
+
+
+def _card_from_response(data: dict[str, Any]) -> dict[str, Any] | None:
+    payload = data.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("modifyDttm") in (None, "") and data.get("modifyDttm") not in (
+        None,
+        "",
+    ):
+        payload = {**payload, "modifyDttm": data["modifyDttm"]}
+    return payload
 
 
 def spd_base_url(host: str | None = None) -> str:
@@ -156,7 +181,22 @@ class SpdClient:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate(config.encode("utf-8"))
+        _active_curl.add(proc)
+        try:
+            stdout, stderr = await proc.communicate(config.encode("utf-8"))
+        except (asyncio.CancelledError, Exception):
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                try:
+                    await proc.wait()
+                except Exception:
+                    pass
+            raise
+        finally:
+            _active_curl.discard(proc)
         text = stdout.decode("utf-8", errors="replace")
         parsed = parse_curl_responses(text)
         if proc.returncode not in (0, 22) and not any(
@@ -238,8 +278,7 @@ class SpdClient:
             return None
         if not isinstance(data, dict):
             return None
-        payload = data.get("payload")
-        return payload if isinstance(payload, dict) else None
+        return _card_from_response(data)
 
     def _card_payload(self, body: str, path: str) -> dict[str, Any] | None:
         try:
@@ -249,8 +288,7 @@ class SpdClient:
             return None
         if not isinstance(data, dict):
             return None
-        payload = data.get("payload")
-        return payload if isinstance(payload, dict) else None
+        return _card_from_response(data)
 
     async def taxation_piece(self, fgis_id: str) -> dict[str, Any] | None:
         return (await self.taxation_pieces([fgis_id]))[0]

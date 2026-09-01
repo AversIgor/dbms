@@ -1,6 +1,6 @@
 # Схема БД (актуальная)
 
-Источник: `alembic/versions/` + `src/migrate/models.py`. Head: `0005_taxation_piece_read_at`.
+Источник: `alembic/versions/` + `src/migrate/models.py`. Head: `0006_actuality_date`.
 
 ```mermaid
 erDiagram
@@ -15,6 +15,7 @@ erDiagram
     numeric area "площадь"
     varchar status "status"
     date read_at "дата чтения из СПД, индекс с субъектом"
+    date actuality_date "дата актуальности (появление в ФГИС ЛК)"
     geometry geom "контур, gist"
   }
   fgis_import_history {
@@ -35,7 +36,7 @@ erDiagram
 | --- | --- |
 | extension `postgis` | геометрия (миграция `0001_postgis`) |
 | `alembic_version` | текущая revision |
-| `taxation_piece` | выдел: семантика + контур (`0002`) + `read_at` (`0005_taxation_piece_read_at`) |
+| `taxation_piece` | выдел: семантика + контур (`0002`) + `read_at` (`0005`) + `actuality_date` (`0006_actuality_date`) |
 | `fgis_import_history` | журнал прогонов fgislk (`0003` + окно `0004_fgis_import_period`) |
 | таблицы PostGIS (`spatial_ref_sys` и др.) | ставит расширение, не описывать в `models.py` |
 
