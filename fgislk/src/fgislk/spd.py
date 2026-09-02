@@ -404,9 +404,6 @@ class SpdClient:
             return None
         return _card_from_response(data)
 
-    async def taxation_piece(self, fgis_id: str) -> dict[str, Any] | None:
-        return await self._card_via_http(fgis_id)
-
     async def taxation_pieces(
         self, fgis_ids: Sequence[str]
     ) -> list[dict[str, Any] | None]:

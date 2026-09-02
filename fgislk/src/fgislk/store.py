@@ -140,10 +140,6 @@ def unlock_subject(conn: Connection, subject: str) -> None:
     conn.commit()
 
 
-def upsert_piece(conn: Connection, row: dict[str, Any]) -> None:
-    upsert_pieces(conn, [row])
-
-
 def upsert_pieces(conn: Connection, rows: Sequence[dict[str, Any]]) -> None:
     if not rows:
         return

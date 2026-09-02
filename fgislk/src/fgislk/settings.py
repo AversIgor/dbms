@@ -99,13 +99,6 @@ def refresh_overlay() -> None:
         _overlay[key] = str(value).strip()
 
 
-def reset_overlay_for_tests() -> None:
-    global _overlay, _overlay_loaded, _loaded
-    _overlay = {}
-    _overlay_loaded = False
-    _loaded = False
-
-
 def _effective(key: str) -> str | None:
     load_settings()
     if key in _overlay:
