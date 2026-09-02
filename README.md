@@ -109,7 +109,7 @@ sudo ufw enable
 
 ### 5. `fgislk` на хосте
 
-СПД `fgislk.gov.ru` на Linux требует GOST-TLS: обычный curl даёт `error:0A000410:sslv3 alert handshake failure`. На Windows это закрывает Schannel (`fgislk/run.ps1`) — тот путь не трогать. WFS `pub.fgislk.gov.ru` работает обычным TLS.
+СПД `fgislk.gov.ru` на Linux требует GOST-TLS: обычный curl даёт `error:0A000410:sslv3 alert handshake failure`. На Windows это закрывает Schannel (`fgislk/run.ps1`) — тот путь не трогать.
 
 **Один раз на машине** (не при каждом `git pull`): собрать gost-engine. Движок ставится в систему (`/usr/lib/.../gost.so`), переживает обновление репозитория.
 

@@ -15,11 +15,9 @@ from fgislk.store import (
     recent_read_ids,
     try_lock_subject,
     unlock_subject,
-    update_contour,
     upsert_piece,
     write_history,
 )
-from fgislk.wfs import WfsClient
 from fgislk.windows import (
     all_subjects,
     audit_read_since,
@@ -130,13 +128,11 @@ async def run_subject(
     *,
     engine: Engine,
     spd: SpdClient,
-    wfs: WfsClient,
     running: RunningSet,
     subject: str,
     audit: bool,
     require_lock: bool,
     audit_from: date | None = None,
-    fetch_wfs: bool = True,
 ) -> str:
     conn = engine.connect()
     period_start: date | None = None
@@ -170,7 +166,6 @@ async def run_subject(
             updated = await _import_window(
                 conn,
                 spd,
-                wfs,
                 subject,
                 start,
                 end,
@@ -184,7 +179,6 @@ async def run_subject(
                 ),
                 read_at=today,
                 history_day=history_day,
-                fetch_wfs=fetch_wfs,
             )
             if not running.same_gen(gen) or running.halted():
                 return "stopped"
@@ -251,7 +245,6 @@ async def run_subject(
 async def _import_window(
     conn,
     spd: SpdClient,
-    wfs: WfsClient,
     subject: str,
     start: date,
     end: date,
@@ -264,7 +257,6 @@ async def _import_window(
     fresh_since: date | None = None,
     read_at: date | None = None,
     history_day: date | None = None,
-    fetch_wfs: bool = True,
 ) -> int:
     async def on_window(query_start: date, query_end: date) -> None:
         if not running.same_gen(gen) or running.halted():
@@ -313,28 +305,13 @@ async def _import_window(
         except SpdError:
             log.warning("пачка карточек субъекта %s недоступна", subject)
             continue
-        fetched_ids: list[str] = []
         for fgis_id, payload in zip(chunk, payloads, strict=True):
             if not payload:
                 continue
             row = row_from_payload(subject, fgis_id, payload)
             row["read_at"] = today
             upsert_piece(conn, row)
-            fetched_ids.append(fgis_id)
             upserted += 1
-        if fetched_ids and fetch_wfs:
-            contours = await wfs.taxation_piece_contours(fetched_ids)
-            for fgis_id, contour in zip(fetched_ids, contours, strict=True):
-                if contour is None:
-                    continue
-                semantic_id, geom_json = contour
-                update_contour(
-                    conn,
-                    subject=subject,
-                    fgis_id=fgis_id,
-                    semantic_id=semantic_id,
-                    geom_json=geom_json,
-                )
         conn.commit()
         await running.update(subject, updated_count=upserted)
         if commit_every is not None and history_day is not None:
@@ -394,13 +371,11 @@ async def run_subjects(
     *,
     engine: Engine,
     spd: SpdClient,
-    wfs: WfsClient,
     running: RunningSet,
     subjects: list[str] | None,
     audit: bool,
     require_lock: bool,
     audit_from: date | None = None,
-    fetch_wfs: bool = True,
 ) -> None:
     running.reset()
     targets = subjects if subjects is not None else all_subjects()
@@ -411,13 +386,11 @@ async def run_subjects(
             await run_subject(
                 engine=engine,
                 spd=spd,
-                wfs=wfs,
                 running=running,
                 subject=code,
                 audit=audit,
                 require_lock=require_lock,
                 audit_from=audit_from,
-                fetch_wfs=fetch_wfs,
             )
 
     tasks = [running.track(asyncio.create_task(one(code))) for code in targets]
@@ -455,21 +428,17 @@ async def daily_loop(
 
             async def once() -> None:
                 spd = SpdClient()
-                wfs = WfsClient()
                 try:
                     await run_subjects(
                         engine=engine,
                         spd=spd,
-                        wfs=wfs,
                         running=running,
                         subjects=None,
                         audit=False,
                         require_lock=False,
-                        fetch_wfs=True,
                     )
                 finally:
                     await spd.aclose()
-                    await wfs.aclose()
 
             task = running.track(asyncio.create_task(once()))
             try:

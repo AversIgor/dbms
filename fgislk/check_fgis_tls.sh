@@ -5,7 +5,6 @@ set -u
 
 CIPHER="GOST2012-GOST8912-GOST8912"
 SPD_URL="https://fgislk.gov.ru/rmdl/"
-PUB_URL="https://pub.fgislk.gov.ru/map/"
 CATALOGS="https://fgislk.gov.ru/rmdl/pvv/backend/gateway-adapter-spd/gateway/services/external/public/v1/catalogs?page=0&size=1"
 FAIL=0
 
@@ -99,17 +98,6 @@ else
   else
     bad "GOST к /rmdl/ $gost_out — пока так, fgislk тоже получит 0A000410"
   fi
-fi
-
-say ""
-say "=== WFS pub (обычный TLS, без GOST) ==="
-pub_out=$(curl -4 -sk -o /dev/null -w "http=%{http_code}" \
-  --max-time 15 --tlsv1.2 --http1.1 \
-  "$PUB_URL" 2>&1) || true
-if printf '%s\n' "$pub_out" | grep -Eq 'http=(200|301|302|303|307|308)'; then
-  ok "pub.fgislk.gov.ru $pub_out"
-else
-  bad "pub.fgislk.gov.ru $pub_out"
 fi
 
 login=$(env_get FGIS_LOGIN "$root/.env")

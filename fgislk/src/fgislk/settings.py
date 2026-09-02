@@ -142,17 +142,6 @@ def fgis_host() -> str:
     return raw or "fgislk.gov.ru"
 
 
-def pub_fgis_base_url() -> str:
-    host = fgis_host().rstrip("/")
-    if host.startswith("http://") or host.startswith("https://"):
-        base = host.rstrip("/")
-    else:
-        if not host.startswith("pub."):
-            host = f"pub.{host}"
-        base = f"https://{host}"
-    return base
-
-
 def fgis_tls() -> str:
     """schannel — Windows curl.exe; openssl — Linux curl + gost-engine. Пусто — по ОС."""
     raw = (_effective("FGIS_TLS") or "").strip().lower()

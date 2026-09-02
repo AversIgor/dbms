@@ -141,45 +141,6 @@ def upsert_piece(conn: Connection, row: dict[str, Any]) -> None:
     conn.execute(_UPSERT, row)
 
 
-_UPDATE_CONTOUR_SEMANTIC = text(
-    """
-    UPDATE taxation_piece SET
-        semantic_id = COALESCE(:semantic_id, semantic_id)
-    WHERE subject = :subject AND fgis_id = :fgis_id
-    """
-)
-
-_UPDATE_CONTOUR_GEOM = text(
-    """
-    UPDATE taxation_piece SET
-        semantic_id = COALESCE(:semantic_id, semantic_id),
-        geom = ST_SetSRID(ST_GeomFromGeoJSON(:geom_json), 4326)
-    WHERE subject = :subject AND fgis_id = :fgis_id
-    """
-)
-
-
-def update_contour(
-    conn: Connection,
-    *,
-    subject: str,
-    fgis_id: str,
-    semantic_id: int | None,
-    geom_json: str | None,
-) -> None:
-    if semantic_id is None and geom_json is None:
-        return
-    params = {
-        "subject": subject,
-        "fgis_id": fgis_id,
-        "semantic_id": semantic_id,
-    }
-    if geom_json is not None:
-        conn.execute(_UPDATE_CONTOUR_GEOM, {**params, "geom_json": geom_json})
-    else:
-        conn.execute(_UPDATE_CONTOUR_SEMANTIC, params)
-
-
 def recent_read_ids(
     conn: Connection, subject: str, since: date, ids: Sequence[str]
 ) -> set[str]:
@@ -351,20 +312,6 @@ def overlay_status(
         out.append(item)
     out.sort(key=lambda row: (not row.get("in_progress"), row["subject"]))
     return out
-
-
-def geom_count_by_subject(eng: Engine) -> dict[str, int]:
-    sql = text(
-        """
-        SELECT subject, COUNT(*)::int AS geom_count
-        FROM taxation_piece
-        WHERE geom IS NOT NULL
-        GROUP BY subject
-        """
-    )
-    with eng.connect() as conn:
-        rows = conn.execute(sql).all()
-    return {str(row[0]): int(row[1]) for row in rows}
 
 
 def status_day_meta(view_day: date, today: date) -> dict[str, str | None]:
