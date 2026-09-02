@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy.engine import Engine
 
 from fgislk.mapper import row_from_payload
-from fgislk.settings import max_workers
+from fgislk.settings import batch_workers, max_workers
 from fgislk.spd import SpdClient, SpdError, kill_all_curl
 from fgislk.store import (
     last_ok_day,
@@ -295,11 +295,11 @@ async def _import_window(
     await running.update(
         subject, updated_count=upserted, changed_total=fgis_count
     )
-    for offset in range(0, len(to_fetch), FLUSH_BATCH):
-        if not running.same_gen(gen) or running.halted():
-            raise asyncio.CancelledError
-        await asyncio.sleep(0)
-        chunk = to_fetch[offset : offset + FLUSH_BATCH]
+    db_lock = asyncio.Lock()
+    inner = asyncio.Semaphore(batch_workers())
+
+    async def flush_chunk(chunk: list[str]) -> None:
+        nonlocal upserted
         payloads: list[dict[str, Any] | None] | None = None
         for attempt in range(3):
             try:
@@ -313,7 +313,7 @@ async def _import_window(
                 )
         if payloads is None:
             log.warning("пачка карточек субъекта %s недоступна", subject)
-            continue
+            return
         rows: list[dict[str, Any]] = []
         for fgis_id, payload in zip(chunk, payloads, strict=True):
             if not payload:
@@ -321,22 +321,36 @@ async def _import_window(
             row = row_from_payload(subject, fgis_id, payload)
             row["read_at"] = today
             rows.append(row)
-        if rows:
-            upsert_pieces(conn, rows)
-            upserted += len(rows)
-        conn.commit()
-        await running.update(subject, updated_count=upserted)
-        if commit_every is not None and history_day is not None:
-            write_history(
-                conn,
-                subject=subject,
-                day=history_day,
-                result="partial",
-                updated_count=upserted,
-                error=None,
-                period_start=start,
-                period_end=end,
-            )
+        async with db_lock:
+            if not running.same_gen(gen) or running.halted():
+                raise asyncio.CancelledError
+            if rows:
+                upsert_pieces(conn, rows)
+                upserted += len(rows)
+            conn.commit()
+            await running.update(subject, updated_count=upserted)
+            if commit_every is not None and history_day is not None:
+                write_history(
+                    conn,
+                    subject=subject,
+                    day=history_day,
+                    result="partial",
+                    updated_count=upserted,
+                    error=None,
+                    period_start=start,
+                    period_end=end,
+                )
+
+    async def one(offset: int) -> None:
+        async with inner:
+            if not running.same_gen(gen) or running.halted():
+                raise asyncio.CancelledError
+            await asyncio.sleep(0)
+            await flush_chunk(to_fetch[offset : offset + FLUSH_BATCH])
+
+    await asyncio.gather(
+        *[one(offset) for offset in range(0, len(to_fetch), FLUSH_BATCH)]
+    )
     await running.update(subject, updated_count=upserted)
     return upserted
 

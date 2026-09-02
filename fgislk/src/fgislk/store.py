@@ -8,7 +8,7 @@ from sqlalchemy import bindparam, create_engine, inspect as sa_inspect, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import SQLAlchemyError
 
-from fgislk.settings import DATA_KIND, DATA_KIND_LABELS, database_url, max_workers
+from fgislk.settings import DATA_KIND, DATA_KIND_LABELS, database_url, http_workers
 from fgislk.windows import AUDIT_START
 
 _UPSERT = text(
@@ -56,7 +56,7 @@ _RECENT_ID_CHUNK = 1000
 
 
 def make_engine() -> Engine:
-    workers = max_workers()
+    workers = http_workers()
     return create_engine(
         database_url(),
         pool_pre_ping=True,

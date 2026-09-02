@@ -16,7 +16,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from fgislk.settings import fgis_credentials, fgis_host, fgis_tls, max_workers
+from fgislk.settings import fgis_credentials, fgis_host, fgis_tls, http_workers
 from fgislk.windows import add_month
 
 _RETRY_ATTEMPTS = 3
@@ -29,10 +29,10 @@ _transfer_sem: asyncio.Semaphore | None = None
 
 
 def _transfers() -> asyncio.Semaphore:
-    """Живых HTTP к СПД на процесс = FGIS_MAX_WORKERS."""
+    """Живых HTTP к СПД на процесс = FGIS_MAX_WORKERS × FGIS_BATCH_WORKERS."""
     global _transfer_sem
     if _transfer_sem is None:
-        _transfer_sem = asyncio.Semaphore(max_workers())
+        _transfer_sem = asyncio.Semaphore(http_workers())
     return _transfer_sem
 
 
@@ -410,7 +410,7 @@ class SpdClient:
     async def taxation_pieces(
         self, fgis_ids: Sequence[str]
     ) -> list[dict[str, Any] | None]:
-        """Пачка карточек: один curl на пачку; живых HTTP к СПД не больше FGIS_MAX_WORKERS на процесс."""
+        """Пачка карточек: один curl на пачку; живых HTTP к СПД не больше http_workers() на процесс."""
         ids = list(fgis_ids)
         if not ids:
             return []

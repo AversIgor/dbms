@@ -11,8 +11,14 @@ from dotenv import load_dotenv
 REQUIRED_SCHEMA = "0007_taxation_piece_semantic_id"
 DATA_KIND = "taxation_piece"
 DATA_KIND_LABELS = {DATA_KIND: "выделы"}
-DEFAULT_MAX_WORKERS = 10
-ALLOWED_SETTINGS = ("FGIS_MAX_WORKERS", "FGIS_TLS", "FGIS_HOST")
+DEFAULT_MAX_WORKERS = 5
+DEFAULT_BATCH_WORKERS = 3
+ALLOWED_SETTINGS = (
+    "FGIS_MAX_WORKERS",
+    "FGIS_BATCH_WORKERS",
+    "FGIS_TLS",
+    "FGIS_HOST",
+)
 _SECRET_KEYS = frozenset(
     {
         "FGIS_LOGIN",
@@ -160,14 +166,28 @@ def fgis_credentials() -> tuple[str, str]:
     return login, password
 
 
-def max_workers() -> int:
-    """Живых HTTP к СПД на процесс (столько же субъектов сразу). По умолчанию 10."""
-    raw = _effective("FGIS_MAX_WORKERS") or str(DEFAULT_MAX_WORKERS)
+def _positive_int(key: str, default: int) -> int:
+    raw = _effective(key) or str(default)
     try:
         value = int(raw)
     except ValueError:
-        value = DEFAULT_MAX_WORKERS
+        value = default
     return max(1, value)
+
+
+def max_workers() -> int:
+    """Субъектов сразу. По умолчанию 5."""
+    return _positive_int("FGIS_MAX_WORKERS", DEFAULT_MAX_WORKERS)
+
+
+def batch_workers() -> int:
+    """Параллельных пачек карточек внутри субъекта. По умолчанию 3."""
+    return _positive_int("FGIS_BATCH_WORKERS", DEFAULT_BATCH_WORKERS)
+
+
+def http_workers() -> int:
+    """Живых HTTP к СПД на процесс = субъекты × пачки."""
+    return max_workers() * batch_workers()
 
 
 def listen_port() -> int:
@@ -190,6 +210,10 @@ def settings_view() -> dict:
             "value": max_workers(),
             "source": _source("FGIS_MAX_WORKERS"),
         },
+        "FGIS_BATCH_WORKERS": {
+            "value": batch_workers(),
+            "source": _source("FGIS_BATCH_WORKERS"),
+        },
         "FGIS_TLS": {"value": fgis_tls(), "source": _source("FGIS_TLS")},
         "FGIS_HOST": {"value": fgis_host(), "source": _source("FGIS_HOST")},
     }
@@ -209,13 +233,13 @@ def _validate_updates(payload: dict) -> dict[str, str | None]:
             updates[key] = None
             continue
         text = str(value).strip()
-        if key == "FGIS_MAX_WORKERS":
+        if key in ("FGIS_MAX_WORKERS", "FGIS_BATCH_WORKERS"):
             try:
                 number = int(text)
             except ValueError as exc:
-                raise ValueError("FGIS_MAX_WORKERS — целое ≥ 1") from exc
+                raise ValueError(f"{key} — целое ≥ 1") from exc
             if number < 1:
-                raise ValueError("FGIS_MAX_WORKERS — целое ≥ 1")
+                raise ValueError(f"{key} — целое ≥ 1")
             updates[key] = str(number)
         elif key == "FGIS_TLS":
             lowered = text.lower()
