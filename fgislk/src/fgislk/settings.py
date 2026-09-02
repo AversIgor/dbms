@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 
-REQUIRED_SCHEMA = "0007_taxation_piece_semantic_id"
+REQUIRED_SCHEMA = "0008_quarters"
 DATA_KIND = "taxation_piece"
 DATA_KIND_LABELS = {DATA_KIND: "выделы"}
 DEFAULT_MAX_WORKERS = 5

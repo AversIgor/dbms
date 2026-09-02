@@ -36,6 +36,21 @@
 | `semantic_id` | integer | идентификатор семантики (`TAXATION_PIECE.{id}`) |
 | `geom` | geometry | контур |
 
+Таблица **квартал** (`quarters`):
+
+| Колонка | Тип | Перевод |
+| --- | --- | --- |
+| `fgis_id` | varchar(50), индекс | учётный номер квартала ФГИС ЛК |
+| `subject` | varchar(3), индекс | субъект |
+| `subforestry` | varchar(10) | участковое лесничество |
+| `quarter` | varchar(10) | номер квартала |
+| `tract` | varchar(150) | урочище |
+| `status` | varchar(10) | status |
+| `read_at` | date | дата чтения из СПД |
+| `actuality_date` | date | дата актуальности (появление в ФГИС ЛК, `modifyDttm` СПД) |
+| `semantic_id` | integer | идентификатор семантики (`QUARTER.{id}`) |
+| `geom` | geometry | контур |
+
 ## Ограничения и допущения
 
 - Одна PostGIS на все прикладные данные; без второй гео-БД «на вырост».

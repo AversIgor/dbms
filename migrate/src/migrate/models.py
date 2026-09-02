@@ -55,6 +55,44 @@ class TaxationPiece(Base):
     )
 
 
+class Quarter(Base):
+    """Квартал: семантика и контур в одной строке."""
+
+    __tablename__ = "quarters"
+    __table_args__ = (
+        PrimaryKeyConstraint("subject", "fgis_id", name="quarters_pkey"),
+        Index("ix_quarters_fgis_id", "fgis_id"),
+        Index("ix_quarters_subject", "subject"),
+        Index("ix_quarters_subject_read_at", "subject", "read_at"),
+        Index("ix_quarters_geom", "geom", postgresql_using="gist"),
+        {"comment": "квартал"},
+    )
+
+    fgis_id: Mapped[str] = mapped_column(
+        String(50), comment="учётный номер квартала ФГИС ЛК"
+    )
+    subject: Mapped[str] = mapped_column(String(3), comment="субъект")
+    subforestry: Mapped[str | None] = mapped_column(
+        String(10), comment="участковое лесничество"
+    )
+    quarter: Mapped[str | None] = mapped_column(String(10), comment="номер квартала")
+    tract: Mapped[str | None] = mapped_column(String(150), comment="урочище")
+    status: Mapped[str | None] = mapped_column(String(10), comment="status")
+    read_at: Mapped[date | None] = mapped_column(
+        Date, comment="дата чтения из СПД"
+    )
+    actuality_date: Mapped[date | None] = mapped_column(
+        Date, comment="дата актуальности (появление в ФГИС ЛК)"
+    )
+    semantic_id: Mapped[int | None] = mapped_column(
+        Integer, comment="идентификатор семантики WFS (QUARTER.{id})"
+    )
+    geom: Mapped[object | None] = mapped_column(
+        Geometry(geometry_type="GEOMETRY", spatial_index=False),
+        comment="контур",
+    )
+
+
 class FgisImportHistory(Base):
     """Журнал прогонов импорта fgislk, не снимок слоя."""
 
