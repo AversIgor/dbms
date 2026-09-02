@@ -55,6 +55,7 @@
     .wait { background: var(--wait-bg); color: var(--wait); }
     .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end; margin: 0.5rem 0; }
     label { font-size: 0.8rem; color: var(--muted); display: flex; flex-direction: column; gap: 0.15rem; }
+    label.check { flex-direction: row; align-items: center; gap: 0.35rem; white-space: nowrap; }
     input, button, select {
       font: inherit;
       padding: 0.25rem 0.5rem;
@@ -111,6 +112,11 @@
     function fieldInput(field) {
       const name = esc(field.name);
       const req = field.optional ? "" : "required";
+      if (field.type === "checkbox") {
+        const v = esc(field.value != null && field.value !== "" ? field.value : "1");
+        const checked = field.checked ? "checked" : "";
+        return `<label class="check"><input name="${name}" type="checkbox" value="${v}" ${checked}> ${esc(field.label || field.name)}</label>`;
+      }
       if (field.type === "select") {
         const opts = (field.options || []).map((opt) => {
           const v = typeof opt === "object" ? opt.value : opt;
@@ -162,6 +168,10 @@
       Object.keys(query).forEach((k) => params.set(k, query[k]));
       (action.fields || []).forEach((field) => {
         const input = form.elements[field.name];
+        if (field.type === "checkbox") {
+          params.set(field.name, input && input.checked ? (input.value || "1") : "0");
+          return;
+        }
         const value = input ? String(input.value || "").trim() : "";
         if (value) params.set(field.name, value);
       });

@@ -9,8 +9,22 @@ from urllib.parse import quote
 from dotenv import load_dotenv
 
 REQUIRED_SCHEMA = "0008_quarters"
-DATA_KIND = "taxation_piece"
-DATA_KIND_LABELS = {DATA_KIND: "выделы"}
+KIND_QUARTERS = "quarters"
+KIND_TAXATION_PIECE = "taxation_piece"
+DATA_KIND = KIND_TAXATION_PIECE
+IMPORT_ORDER = (KIND_QUARTERS, KIND_TAXATION_PIECE)
+DATA_KIND_LABELS = {
+    KIND_QUARTERS: "кварталы",
+    KIND_TAXATION_PIECE: "выделы",
+}
+SPD_RESOURCE = {
+    KIND_QUARTERS: "forestQuarter",
+    KIND_TAXATION_PIECE: "taxationPiece",
+}
+KIND_TABLE = {
+    KIND_QUARTERS: "quarters",
+    KIND_TAXATION_PIECE: "taxation_piece",
+}
 DEFAULT_MAX_WORKERS = 5
 DEFAULT_BATCH_WORKERS = 3
 ALLOWED_SETTINGS = (

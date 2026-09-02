@@ -8,7 +8,7 @@ from sqlalchemy import bindparam, create_engine, inspect as sa_inspect, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import SQLAlchemyError
 
-from fgislk.settings import DATA_KIND, DATA_KIND_LABELS, database_url, http_workers
+from fgislk.settings import DATA_KIND, DATA_KIND_LABELS, KIND_TABLE, database_url, http_workers
 from fgislk.windows import AUDIT_START
 
 _UPSERT = text(
@@ -31,6 +31,26 @@ _UPSERT = text(
     """
 )
 
+_UPSERT_QUARTERS = text(
+    """
+    INSERT INTO quarters (
+        subject, fgis_id, subforestry, quarter, tract, status, read_at,
+        actuality_date
+    )
+    VALUES (
+        :subject, :fgis_id, :subforestry, :quarter, :tract, :status, :read_at,
+        :actuality_date
+    )
+    ON CONFLICT (subject, fgis_id) DO UPDATE SET
+        subforestry = EXCLUDED.subforestry,
+        quarter = EXCLUDED.quarter,
+        tract = COALESCE(EXCLUDED.tract, quarters.tract),
+        status = EXCLUDED.status,
+        read_at = EXCLUDED.read_at,
+        actuality_date = COALESCE(EXCLUDED.actuality_date, quarters.actuality_date)
+    """
+)
+
 _INSERT_HISTORY = text(
     """
     INSERT INTO fgis_import_history (
@@ -43,14 +63,6 @@ _INSERT_HISTORY = text(
     )
     """
 )
-
-_RECENT_IDS = text(
-    """
-    SELECT fgis_id FROM taxation_piece
-    WHERE subject = :subject AND read_at >= :since
-      AND fgis_id IN :ids
-    """
-).bindparams(bindparam("ids", expanding=True))
 
 _RECENT_ID_CHUNK = 1000
 
@@ -76,7 +88,7 @@ def db_revision(eng: Engine) -> str | None:
         return None
 
 
-def last_ok_day(conn: Connection, subject: str) -> date | None:
+def last_ok_day(conn: Connection, subject: str, data_kind: str) -> date | None:
     """Закрытый день: ok с окном СПД (инкремент и аудит, day = вчера прогона).
 
     Старые строки аудита писали в day конец окна (сегодня прогона) — для них
@@ -100,7 +112,7 @@ def last_ok_day(conn: Connection, subject: str) -> date | None:
         ),
         {
             "subject": subject,
-            "kind": DATA_KIND,
+            "kind": data_kind,
             "audit_start": AUDIT_START,
         },
     ).scalar()
@@ -114,7 +126,7 @@ def last_ok_day(conn: Connection, subject: str) -> date | None:
             LIMIT 1
             """
         ),
-        {"subject": subject, "kind": DATA_KIND},
+        {"subject": subject, "kind": data_kind},
     ).mappings().first()
     if latest is not None and latest["result"] == "error":
         failed = latest["day"]
@@ -126,7 +138,7 @@ def last_ok_day(conn: Connection, subject: str) -> date | None:
 def try_lock_subject(conn: Connection, subject: str) -> bool:
     locked = conn.execute(
         text("SELECT pg_try_advisory_lock(hashtext(:key))"),
-        {"key": f"fgislk:{DATA_KIND}:{subject}"},
+        {"key": f"fgislk:{subject}"},
     ).scalar()
     conn.commit()
     return bool(locked)
@@ -135,7 +147,7 @@ def try_lock_subject(conn: Connection, subject: str) -> bool:
 def unlock_subject(conn: Connection, subject: str) -> None:
     conn.execute(
         text("SELECT pg_advisory_unlock(hashtext(:key))"),
-        {"key": f"fgislk:{DATA_KIND}:{subject}"},
+        {"key": f"fgislk:{subject}"},
     )
     conn.commit()
 
@@ -161,17 +173,51 @@ def upsert_pieces(conn: Connection, rows: Sequence[dict[str, Any]]) -> None:
     )
 
 
+def upsert_quarters(conn: Connection, rows: Sequence[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    conn.execute(
+        _UPSERT_QUARTERS,
+        [
+            {
+                "subject": row.get("subject"),
+                "fgis_id": row.get("fgis_id"),
+                "subforestry": row.get("subforestry"),
+                "quarter": row.get("quarter"),
+                "tract": row.get("tract"),
+                "status": row.get("status"),
+                "read_at": row.get("read_at"),
+                "actuality_date": row.get("actuality_date"),
+            }
+            for row in rows
+        ],
+    )
+
+
 def recent_read_ids(
-    conn: Connection, subject: str, since: date, ids: Sequence[str]
+    conn: Connection,
+    subject: str,
+    since: date,
+    ids: Sequence[str],
+    *,
+    data_kind: str,
 ) -> set[str]:
     if not ids:
         return set()
+    table = KIND_TABLE[data_kind]
+    sql = text(
+        f"""
+        SELECT fgis_id FROM {table}
+        WHERE subject = :subject AND read_at >= :since
+          AND fgis_id IN :ids
+        """
+    ).bindparams(bindparam("ids", expanding=True))
     found: set[str] = set()
     unique = list(dict.fromkeys(ids))
     for offset in range(0, len(unique), _RECENT_ID_CHUNK):
         chunk = unique[offset : offset + _RECENT_ID_CHUNK]
         rows = conn.execute(
-            _RECENT_IDS,
+            sql,
             {"subject": subject, "since": since, "ids": chunk},
         )
         found.update(str(row[0]) for row in rows)
@@ -186,6 +232,7 @@ def write_history(
     result: str,
     updated_count: int,
     error: str | None,
+    data_kind: str,
     period_start: date | None = None,
     period_end: date | None = None,
 ) -> None:
@@ -196,7 +243,7 @@ def write_history(
             "day": day,
             "result": result,
             "updated_count": updated_count,
-            "data_kind": DATA_KIND,
+            "data_kind": data_kind,
             "error": error,
             "ran_at": datetime.now(timezone.utc),
             "period_start": period_start,
@@ -311,10 +358,13 @@ def overlay_status(
     view_day: date,
     today: date,
 ) -> list[dict[str, Any]]:
-    last_by_subject: dict[str, dict[str, Any]] = {}
+    def _key(subject: str, kind: str | None) -> tuple[str, str]:
+        return (subject, kind or DATA_KIND)
+
+    last_by: dict[tuple[str, str], dict[str, Any]] = {}
     for row in subjects:
-        last_by_subject.setdefault(row["subject"], row)
-    live_codes: set[str] = set()
+        last_by.setdefault(_key(row["subject"], row.get("data_kind")), row)
+    live_keys: set[tuple[str, str]] = set()
     out: list[dict[str, Any]] = []
     for job in jobs:
         end_raw = job.get("period_end")
@@ -326,15 +376,22 @@ def overlay_status(
                 continue
         elif view_day != today:
             continue
-        live_codes.add(job["subject"])
-        out.append(_live_row(job, last_by_subject.get(job["subject"])))
+        key = _key(job["subject"], job.get("data_kind"))
+        live_keys.add(key)
+        out.append(_live_row(job, last_by.get(key)))
     for row in subjects:
-        if row["subject"] in live_codes:
+        if _key(row["subject"], row.get("data_kind")) in live_keys:
             continue
         item = dict(row)
         item["in_progress"] = False
         out.append(item)
-    out.sort(key=lambda row: (not row.get("in_progress"), row["subject"]))
+    out.sort(
+        key=lambda row: (
+            not row.get("in_progress"),
+            row["subject"],
+            row.get("data_kind") or DATA_KIND,
+        )
+    )
     return out
 
 
@@ -365,12 +422,12 @@ def status_rows(
         params["subject"] = subject
     sql = text(
         f"""
-        SELECT DISTINCT ON (subject)
+        SELECT DISTINCT ON (subject, data_kind)
             subject, day, result, updated_count, error, ran_at,
             period_start, period_end, data_kind
         FROM fgis_import_history
         WHERE {' AND '.join(where)}
-        ORDER BY subject, updated_count DESC, ran_at DESC, id DESC
+        ORDER BY subject, data_kind, updated_count DESC, ran_at DESC, id DESC
         """
     )
     with eng.connect() as conn:
@@ -379,11 +436,18 @@ def status_rows(
 
 
 def history_rows(
-    eng: Engine, *, subject: str | None = None, limit: int = 100
+    eng: Engine,
+    *,
+    subject: str | None = None,
+    data_kind: str | None = None,
+    limit: int = 100,
 ) -> list[dict[str, Any]]:
     cap = max(1, min(limit, 500))
-    params: dict[str, Any] = {"kind": DATA_KIND, "lim": cap}
-    where = "data_kind = :kind"
+    params: dict[str, Any] = {"lim": cap}
+    where = "TRUE"
+    if data_kind:
+        where += " AND data_kind = :kind"
+        params["kind"] = data_kind
     if subject:
         where += " AND subject = :subject"
         params["subject"] = subject

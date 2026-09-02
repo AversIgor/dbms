@@ -7,8 +7,15 @@ from typing import Any
 
 from sqlalchemy.engine import Engine
 
-from fgislk.mapper import row_from_payload
-from fgislk.settings import batch_workers, max_workers
+from fgislk.mapper import quarter_row_from_payload, row_from_payload
+from fgislk.settings import (
+    IMPORT_ORDER,
+    KIND_QUARTERS,
+    KIND_TAXATION_PIECE,
+    SPD_RESOURCE,
+    batch_workers,
+    max_workers,
+)
 from fgislk.spd import SpdClient, SpdError, kill_all_curl
 from fgislk.store import (
     last_ok_day,
@@ -16,6 +23,7 @@ from fgislk.store import (
     try_lock_subject,
     unlock_subject,
     upsert_pieces,
+    upsert_quarters,
     write_history,
 )
 from fgislk.windows import (
@@ -30,6 +38,15 @@ from fgislk.windows import (
 log = logging.getLogger(__name__)
 
 FLUSH_BATCH = 100
+
+_ROW_FROM = {
+    KIND_QUARTERS: quarter_row_from_payload,
+    KIND_TAXATION_PIECE: row_from_payload,
+}
+_UPSERT = {
+    KIND_QUARTERS: upsert_quarters,
+    KIND_TAXATION_PIECE: upsert_pieces,
+}
 
 
 class AlreadyRunning(Exception):
@@ -133,10 +150,9 @@ async def run_subject(
     audit: bool,
     require_lock: bool,
     audit_from: date | None = None,
+    kinds: list[str] | None = None,
 ) -> str:
     conn = engine.connect()
-    period_start: date | None = None
-    period_end: date | None = None
     gen: int | None = None
     try:
         if not try_lock_subject(conn, subject):
@@ -145,92 +161,119 @@ async def run_subject(
             return "busy"
         try:
             today = moscow_today()
-            if audit:
-                window = audit_window(today, start=audit_from)
-            else:
-                window = incremental_window(last_ok_day(conn, subject), today)
-            start, end = window
-            period_start, period_end = start, end
+            history_day = yesterday(today)
+            order = kinds if kinds is not None else list(IMPORT_ORDER)
             gen = await running.claim(
                 subject,
                 mode="audit" if audit else "incremental",
-                period_start=start.isoformat(),
-                period_end=end.isoformat(),
+                data_kind=order[0],
                 updated_count=0,
             )
             if gen is None:
                 if require_lock:
                     raise AlreadyRunning(subject)
                 return "busy"
-            history_day = yesterday(today)
-            updated = await _import_window(
-                conn,
-                spd,
-                subject,
-                start,
-                end,
-                shrink=audit,
-                running=running,
-                gen=gen,
-                commit_every=FLUSH_BATCH if audit else None,
-                skip_fresh=True,
-                fresh_since=(
-                    audit_read_since(today) if audit else yesterday(today)
-                ),
-                read_at=today,
-                history_day=history_day,
-            )
-            if not running.same_gen(gen) or running.halted():
-                return "stopped"
-            write_history(
-                conn,
-                subject=subject,
-                day=history_day,
-                result="ok",
-                updated_count=updated,
-                error=None,
-                period_start=start,
-                period_end=end,
-            )
-            return "ok"
-        except asyncio.CancelledError:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            raise
-        except Exception as exc:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            if gen is not None and (
-                not running.same_gen(gen) or running.halted()
-            ):
-                return "stopped"
-            try:
-                n = 0
-                if gen is not None:
-                    for job in await running.snapshot():
-                        if job["subject"] == subject:
-                            n = int(job.get("updated_count") or 0)
-                            break
-                write_history(
-                    conn,
-                    subject=subject,
-                    day=yesterday(),
-                    result="error",
-                    updated_count=n,
-                    error=str(exc)[:2000],
-                    period_start=period_start,
-                    period_end=period_end,
-                )
-            except Exception:
-                log.exception("не записали историю ошибки субъекта %s", subject)
-            log.exception("импорт субъекта %s", subject)
-            if require_lock:
-                raise
-            return "error"
+            last_error: Exception | None = None
+            last_result = "ok"
+            for kind in order:
+                if not running.same_gen(gen) or running.halted():
+                    return "stopped"
+                period_start: date | None = None
+                period_end: date | None = None
+                try:
+                    if audit:
+                        window = audit_window(today, start=audit_from)
+                    else:
+                        window = incremental_window(
+                            last_ok_day(conn, subject, kind), today
+                        )
+                    start, end = window
+                    period_start, period_end = start, end
+                    await running.update(
+                        subject,
+                        data_kind=kind,
+                        period_start=start.isoformat(),
+                        period_end=end.isoformat(),
+                        updated_count=0,
+                        changed_total=None,
+                    )
+                    updated = await _import_window(
+                        conn,
+                        spd,
+                        subject,
+                        start,
+                        end,
+                        kind=kind,
+                        shrink=audit,
+                        running=running,
+                        gen=gen,
+                        commit_every=FLUSH_BATCH if audit else None,
+                        skip_fresh=True,
+                        fresh_since=(
+                            audit_read_since(today) if audit else yesterday(today)
+                        ),
+                        read_at=today,
+                        history_day=history_day,
+                    )
+                    if not running.same_gen(gen) or running.halted():
+                        return "stopped"
+                    write_history(
+                        conn,
+                        subject=subject,
+                        day=history_day,
+                        result="ok",
+                        updated_count=updated,
+                        error=None,
+                        data_kind=kind,
+                        period_start=start,
+                        period_end=end,
+                    )
+                except asyncio.CancelledError:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise
+                except Exception as exc:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    if gen is not None and (
+                        not running.same_gen(gen) or running.halted()
+                    ):
+                        return "stopped"
+                    try:
+                        n = 0
+                        if gen is not None:
+                            for job in await running.snapshot():
+                                if job["subject"] == subject:
+                                    n = int(job.get("updated_count") or 0)
+                                    break
+                        write_history(
+                            conn,
+                            subject=subject,
+                            day=yesterday(),
+                            result="error",
+                            updated_count=n,
+                            error=str(exc)[:2000],
+                            data_kind=kind,
+                            period_start=period_start,
+                            period_end=period_end,
+                        )
+                    except Exception:
+                        log.exception(
+                            "не записали историю ошибки субъекта %s %s",
+                            subject,
+                            kind,
+                        )
+                    log.exception("импорт субъекта %s %s", subject, kind)
+                    last_error = exc
+                    last_result = "error"
+                    continue
+            if last_error is not None and require_lock:
+                raise last_error
+            return last_result
         finally:
             try:
                 unlock_subject(conn, subject)
@@ -249,6 +292,7 @@ async def _import_window(
     start: date,
     end: date,
     *,
+    kind: str,
     shrink: bool,
     running: RunningSet,
     gen: int,
@@ -270,7 +314,12 @@ async def _import_window(
     if not running.same_gen(gen) or running.halted():
         raise asyncio.CancelledError
     ids = await spd.changed_ids(
-        subject, start, end, shrink=shrink, on_window=on_window
+        subject,
+        start,
+        end,
+        resource=SPD_RESOURCE[kind],
+        shrink=shrink,
+        on_window=on_window,
     )
     if not running.same_gen(gen) or running.halted():
         raise asyncio.CancelledError
@@ -279,7 +328,7 @@ async def _import_window(
     skipped = 0
     if skip_fresh:
         since = fresh_since or audit_read_since(today)
-        fresh = recent_read_ids(conn, subject, since, ids)
+        fresh = recent_read_ids(conn, subject, since, ids, data_kind=kind)
         to_fetch = [fgis_id for fgis_id in ids if fgis_id not in fresh]
         skipped = len(ids) - len(to_fetch)
         if skipped:
@@ -303,7 +352,7 @@ async def _import_window(
         payloads: list[dict[str, Any] | None] | None = None
         for attempt in range(3):
             try:
-                payloads = await spd.taxation_pieces(chunk)
+                payloads = await spd.cards(chunk, resource=SPD_RESOURCE[kind])
                 break
             except SpdError:
                 log.warning(
@@ -318,14 +367,14 @@ async def _import_window(
         for fgis_id, payload in zip(chunk, payloads, strict=True):
             if not payload:
                 continue
-            row = row_from_payload(subject, fgis_id, payload)
+            row = _ROW_FROM[kind](subject, fgis_id, payload)
             row["read_at"] = today
             rows.append(row)
         async with db_lock:
             if not running.same_gen(gen) or running.halted():
                 raise asyncio.CancelledError
             if rows:
-                upsert_pieces(conn, rows)
+                _UPSERT[kind](conn, rows)
                 upserted += len(rows)
             conn.commit()
             await running.update(subject, updated_count=upserted)
@@ -337,6 +386,7 @@ async def _import_window(
                     result="partial",
                     updated_count=upserted,
                     error=None,
+                    data_kind=kind,
                     period_start=start,
                     period_end=end,
                 )
@@ -402,6 +452,7 @@ async def run_subjects(
     audit: bool,
     require_lock: bool,
     audit_from: date | None = None,
+    kinds: list[str] | None = None,
 ) -> None:
     targets = subjects if subjects is not None else all_subjects()
     semaphore = asyncio.Semaphore(max_workers())
@@ -416,6 +467,7 @@ async def run_subjects(
                 audit=audit,
                 require_lock=require_lock,
                 audit_from=audit_from,
+                kinds=kinds,
             )
 
     tasks = [running.track(asyncio.create_task(one(code))) for code in targets]

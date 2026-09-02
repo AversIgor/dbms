@@ -9,8 +9,10 @@
 ## Требования
 
 - Одна страница: блок на каждый раздел из каталога. `spatialData` без HTTP — заглушка, не выдуманный API.
-- Каталог — id, базовый URL из env, текст заглушки. Команды, колонки, фильтры и пагинация — только из `GET /panel` раздела, не зашивать `start=1` в HTML. Нет отдельного блока «Служебные данные».
-- Браузер ходит только на admin. Прокси `/p/{id}/…` — исключительно на allowlist URL из каталога (`MIGRATE_URL`, `FGISLK_URL`). Чужой host, `..` в пути — отказ.
+- Каталог зашит: `migrate`, `fgislk`, `spatialData`. Базовый URL — из env (`MIGRATE_URL`, `FGISLK_URL`); у spatialData — stub, без URL. `GET /catalog` отдаёт `id`, `title`, `has_http`, при необходимости `stub`; `base_url` в браузер не отдавать.
+- Команды, колонки, фильтры и пагинация — только из `GET /panel` раздела, не зашивать `start=1` в HTML. Нет отдельного блока «Служебные данные».
+- Браузер ходит только на admin. Прокси `/p/{id}/…` — только на URL из каталога. Отказ: пустой путь, начинается с `/`, `\`, сегменты `.` или `..`, схема не `http`/`https`, чужой hostname или port, userinfo. Методы: `GET`/`PUT`/`POST`/`PATCH`/`HEAD`. Наверх — только заголовок `content-type`.
+- Карточка HTTP-раздела: `GET /p/{id}/panel`, затем `actions` / `status` / `tables`. Checkbox в команде всегда кладёт в query `1` или `0`. Статус опрашивать каждые 5 с. Нет `status.columns` — фолбэк по JSON `/status`: массив `subjects`, иначе `revision` (префикс до `_`), иначе `history`, иначе `pre` с JSON.
 - Секреты и `POSTGRES_*` не показывать. Логина нет: доступ как у ручных GET на хосте.
 - Не оркестратор: не рестартует процессы, не делает `upgrade`.
 
@@ -19,10 +21,11 @@
 - Стек: FastAPI, один HTML + vanilla JS. Нет React/Vite/MapLibre.
 - `FGISLK_URL` часто указывает на хост (`run.ps1`), не на сервис Compose `fgislk`.
 - Overlay настроек fgislk живёт в разделе (`GET`/`PUT /settings`); витрина форму не показывает.
+- Прокси: таймаут 20 с, редиректы не следуем.
 
 ## Интерфейсы
 
-- **HTTP:** порт `ADMIN_PORT` (по умолчанию 8082). `/` — страница; `/health`; `/catalog`; `/p/{id}/{path}` — прокси.
+- **HTTP:** порт `ADMIN_PORT` (по умолчанию 8082). `/` — страница; `/health`; `/catalog` (без URL бэкендов); `/p/{id}/{path}` — прокси, `MIGRATE_URL`/`FGISLK_URL` в браузер не светит.
 - **migrate / fgislk:** `MIGRATE_URL`, `FGISLK_URL`. Стык — JSON `/panel`, `/status`, команды и таблицы из манифеста.
 - **Postgres:** нет.
 

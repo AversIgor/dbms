@@ -5,7 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from fgislk.settings import DATA_KIND
+from fgislk.settings import KIND_QUARTERS, KIND_TAXATION_PIECE
 from fgislk.windows import MSK
 
 _MS_JSON_DATE = re.compile(r"^/Date\((-?\d+)(?:[+-]\d{4})?\)/$")
@@ -79,8 +79,26 @@ def row_from_payload(subject: str, fgis_id: str, payload: dict[str, Any]) -> dic
         "area": _area(payload.get("squareNval")),
         "status": _clip(payload.get("statusInd"), 10),
         "actuality_date": _date(payload.get("modifyDttm")),
-        "data_kind": DATA_KIND,
+        "data_kind": KIND_TAXATION_PIECE,
     }
+
+
+def quarter_row_from_payload(
+    subject: str, fgis_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "subject": _clip(subject, 3),
+        "fgis_id": _clip(fgis_id, 50),
+        "subforestry": _clip(payload.get("steadRegistrationNo"), 10),
+        "quarter": _clip(payload.get("originalRegistrationNo"), 10),
+        "tract": (
+            _clip(payload.get("tractName"), 150) if "tractName" in payload else None
+        ),
+        "status": _clip(payload.get("statusInd"), 10),
+        "actuality_date": _date(payload.get("modifyDttm")),
+        "data_kind": KIND_QUARTERS,
+    }
+    return row
 
 
 def ids_from_payload(payload: Any) -> list[str]:

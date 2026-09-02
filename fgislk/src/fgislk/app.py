@@ -10,7 +10,13 @@ from fastapi.responses import JSONResponse
 from fgislk import __version__
 from fgislk.gate import migrate_ready, wait_schema
 from fgislk.panel import panel_manifest
-from fgislk.settings import DATA_KIND, REQUIRED_SCHEMA, apply_settings, settings_view
+from fgislk.settings import (
+    DATA_KIND,
+    IMPORT_ORDER,
+    REQUIRED_SCHEMA,
+    apply_settings,
+    settings_view,
+)
 from fgislk.spd import SpdClient
 from fgislk.store import (
     db_revision,
@@ -61,6 +67,15 @@ def _truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _audit_kinds(
+    quarters: str | None, taxation_piece: str | None
+) -> list[str] | None:
+    flags = {"quarters": quarters, "taxation_piece": taxation_piece}
+    if not any(raw is not None and raw.strip() != "" for raw in flags.values()):
+        return None
+    return [kind for kind in IMPORT_ORDER if _truthy(flags.get(kind))]
+
+
 def _running_of() -> RunningSet:
     running = getattr(app.state, "running", None)
     if running is None:
@@ -103,6 +118,7 @@ def panel() -> dict:
 @app.get("/history")
 def history(
     subject: str | None = Query(default=None),
+    data_kind: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
 ):
     code = None
@@ -117,8 +133,9 @@ def history(
                 content={"ok": False, "error": "history — один subject="},
             )
         code = codes[0]
+    kind = (data_kind or "").strip() or None
     engine = app.state.engine
-    return {"rows": history_rows(engine, subject=code, limit=limit)}
+    return {"rows": history_rows(engine, subject=code, data_kind=kind, limit=limit)}
 
 
 @app.get("/settings")
@@ -213,6 +230,8 @@ async def sync(
     stop: str | None = Query(default=None),
     subject: str | None = Query(default=None),
     day: str | None = Query(default=None),
+    quarters: str | None = Query(default=None),
+    taxation_piece: str | None = Query(default=None),
 ):
     want_start = _truthy(start)
     want_audit = _truthy(audit)
@@ -234,6 +253,15 @@ async def sync(
             status_code=400,
             content={"ok": False, "error": "day= только с audit=1"},
         )
+    has_kind_flag = any(
+        raw is not None and raw.strip() != ""
+        for raw in (quarters, taxation_piece)
+    )
+    if has_kind_flag and not want_audit:
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "quarters= и taxation_piece= только с audit=1"},
+        )
     if want_stop:
         if subject is not None and subject.strip() != "":
             return JSONResponse(
@@ -249,6 +277,15 @@ async def sync(
             audit_from = parse_audit_day(day)
         except ValueError as exc:
             return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+    kinds: list[str] | None = None
+    if want_audit:
+        kinds = _audit_kinds(quarters, taxation_piece)
+        if kinds is not None and not kinds:
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "error": "аудит: отметьте выделы и/или кварталы"},
+            )
 
     codes: list[str] | None
     if subject is None or subject.strip() == "":
@@ -284,6 +321,7 @@ async def sync(
         "audit": want_audit,
         "day": audit_from.isoformat() if audit_from is not None else None,
         "subjects": codes if codes is not None else "01-99",
+        "kinds": kinds if kinds is not None else list(IMPORT_ORDER),
     }
     if want_start and codes is None:
         kick: asyncio.Event = app.state.kick
@@ -303,6 +341,7 @@ async def sync(
                 audit=want_audit,
                 require_lock=require_lock,
                 audit_from=audit_from,
+                kinds=kinds,
             )
         finally:
             await spd.aclose()

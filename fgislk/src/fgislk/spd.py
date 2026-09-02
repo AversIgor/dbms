@@ -379,10 +379,15 @@ class SpdClient:
         raise last_error or SpdError(f"СПД недоступен {path}")
 
     async def changed_over_period(
-        self, subject: str, start: date, end: date
+        self,
+        subject: str,
+        start: date,
+        end: date,
+        *,
+        resource: str,
     ) -> dict[str, Any]:
         data = await self._get(
-            "taxationPiece/changedOverPeriod",
+            f"{resource}/changedOverPeriod",
             {
                 "startDate": start.isoformat(),
                 "endDate": end.isoformat(),
@@ -393,8 +398,10 @@ class SpdClient:
             raise SpdError("changedOverPeriod: ожидался объект JSON")
         return data
 
-    async def _card_via_http(self, fgis_id: str) -> dict[str, Any] | None:
-        path = f"taxationPiece/{fgis_id}"
+    async def _card_via_http(
+        self, fgis_id: str, *, resource: str
+    ) -> dict[str, Any] | None:
+        path = f"{resource}/{fgis_id}"
         try:
             data = await self._get(path)
         except SpdError as exc:
@@ -404,8 +411,8 @@ class SpdClient:
             return None
         return _card_from_response(data)
 
-    async def taxation_pieces(
-        self, fgis_ids: Sequence[str]
+    async def cards(
+        self, fgis_ids: Sequence[str], *, resource: str
     ) -> list[dict[str, Any] | None]:
         """Пачка карточек: один curl на пачку; живых HTTP к СПД не больше http_workers() на процесс."""
         ids = list(fgis_ids)
@@ -414,10 +421,13 @@ class SpdClient:
         if not self._curl:
             return list(
                 await asyncio.gather(
-                    *[self._card_via_http(fgis_id) for fgis_id in ids]
+                    *[
+                        self._card_via_http(fgis_id, resource=resource)
+                        for fgis_id in ids
+                    ]
                 )
             )
-        urls = [self._url(f"taxationPiece/{fgis_id}") for fgis_id in ids]
+        urls = [self._url(f"{resource}/{fgis_id}") for fgis_id in ids]
         parsed: list[tuple[int, str]] | None = None
         last_error: Exception | None = None
         for _attempt in range(_RETRY_ATTEMPTS):
@@ -435,7 +445,10 @@ class SpdClient:
             )
             return list(
                 await asyncio.gather(
-                    *[self._card_via_http(fgis_id) for fgis_id in ids]
+                    *[
+                        self._card_via_http(fgis_id, resource=resource)
+                        for fgis_id in ids
+                    ]
                 )
             )
         out: list[dict[str, Any] | None] = []
@@ -451,7 +464,10 @@ class SpdClient:
                 out.append(card)
         if retry_ids:
             recovered = await asyncio.gather(
-                *[self._card_via_http(fgis_id) for fgis_id in retry_ids]
+                *[
+                    self._card_via_http(fgis_id, resource=resource)
+                    for fgis_id in retry_ids
+                ]
             )
             for index, card in zip(retry_at, recovered, strict=True):
                 out[index] = card
@@ -463,6 +479,7 @@ class SpdClient:
         start: date,
         end: date,
         *,
+        resource: str,
         shrink: bool = False,
         on_window=None,
     ) -> list[str]:
@@ -474,7 +491,9 @@ class SpdClient:
         while current <= end:
             if on_window is not None:
                 await on_window(current, end)
-            data = await self.changed_over_period(subject, current, end)
+            data = await self.changed_over_period(
+                subject, current, end, resource=resource
+            )
             if "payload" not in data or data["payload"] is None:
                 if not shrink:
                     return []

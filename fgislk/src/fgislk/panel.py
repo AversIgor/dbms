@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fgislk.settings import DATA_KIND, DATA_KIND_LABELS
+from fgislk.settings import DATA_KIND_LABELS
 
 
 def panel_manifest() -> dict:
@@ -33,7 +33,6 @@ def panel_manifest() -> dict:
                     "type": "select",
                     "optional": True,
                     "label": "Вид реестра",
-                    "value": DATA_KIND,
                     "options": kind_options,
                 },
             ],
@@ -82,6 +81,18 @@ def panel_manifest() -> dict:
                         "type": "date",
                         "optional": True,
                         "label": "С даты",
+                    },
+                    {
+                        "name": "taxation_piece",
+                        "type": "checkbox",
+                        "optional": True,
+                        "label": "выделы",
+                    },
+                    {
+                        "name": "quarters",
+                        "type": "checkbox",
+                        "optional": True,
+                        "label": "кварталы",
                     },
                 ],
             },
