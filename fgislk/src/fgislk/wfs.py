@@ -137,8 +137,10 @@ def _curl_post_config(url: str, referer: str, body: str, *, schannel: bool) -> s
         'write-out = "\\n__HTTPSTATUS__%{http_code}\\n"',
     ]
     if not schannel:
+        # pub.fgislk.gov.ru — российский УЦ, в ca-certificates Ubuntu его нет (curl 60).
         lines.insert(0, "tlsv1.2")
         lines.insert(1, 'ciphers = "DEFAULT:@SECLEVEL=1"')
+        lines.insert(2, "insecure")
     return "\n".join(lines)
 
 
@@ -158,7 +160,7 @@ class WfsClient:
         if not self._curl:
             self._http = httpx.AsyncClient(
                 timeout=_TIMEOUT_SECONDS,
-                verify=fgis_ssl_context(),
+                verify=False if not self._schannel else fgis_ssl_context(),
                 headers={"Referer": self._referer},
             )
 

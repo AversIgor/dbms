@@ -40,8 +40,6 @@ powershell.exe -File ./fgislk/run.ps1
 
 Статус контейнеров: `docker compose ps`. Кто слушает порт: `Get-NetTCPConnection -LocalPort 8081 -State Listen`.
 
-
-
 ## Публикация на пустой Ubuntu
 
 Одна виртуалка Ubuntu 22.04/24.04 (лучше 24.04). Вход по **RDP** (рабочий стол) или SSH, обычный пользователь с `sudo`. Код только из git, не копировать папку с Windows.
@@ -118,10 +116,12 @@ sudo ufw enable
 ```bash
 cd ~/dbms
 sudo bash fgislk/install_gost_engine.sh
-OPENSSL_CONF=/etc/ssl/fgislk-openssl-gost.cnf openssl engine -t gost
+bash fgislk/check_fgis_tls.sh
 ```
 
-Ожидается `(gost) ... [ available ]`. Ветка `master` gost-engine не соберётся (нужен OpenSSL ≥ 3.4); скрипт ставит тег `v3.0.3`. Повторно — только если engine пропал или handshake снова `0A000410`.
+Нужны строки `**OK` у engine** и `**http=200` на `/rmdl/`**. Пока скрипт пишет `FAIL` — витрина будет с `0A000410`; тогда сначала снова `sudo bash fgislk/install_gost_engine.sh`, `fgislk` не поднимать. Ветка `master` gost-engine не соберётся (нужен OpenSSL ≥ 3.4); скрипт ставит тег `v3.0.3`. Повторно — только если engine пропал или handshake снова `0A000410`.
+
+Проверка доступности ФГИС ЛК (пароль не печатает) — тот же `check_fgis_tls.sh`. 
 
 ```bash
 cd ~/dbms
@@ -226,3 +226,44 @@ curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8082/health
 Все три проверки — `200`. `--ff-only`: на сервере не создавать merge-коммиты. Если `pull` отказал — смотреть `git status`, не `git reset --hard`, пока не ясно, что теряется.
 
 Нет systemd: остановить старый `fgislk` (Ctrl+C в том окне) и снова `fgislk serve` из корня `~/dbms` с активным `.venv`.
+
+### 8. После перезагрузки Ubuntu
+
+Код и `.env` не трогать. `install_gost_engine.sh` не запускать. Порядок: Compose → дождаться `migrate` → `fgislk`. Стартовать `fgislk` до `200` на `/ready` нельзя: упадёт с `SchemaMismatch` / `Server disconnected`.
+
+```bash
+cd ~/dbms
+docker compose up -d
+docker compose ps
+```
+
+`db`, `migrate`, `admin` — `Up (healthy)`. Том `pgdata` после reboot поднимается не сразу.
+
+```bash
+curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/ready
+```
+
+Только `200`. Иначе подождать и снова `curl`; не помогло: `docker compose logs --tail=80 migrate`.
+
+```bash
+sudo systemctl start dbms-fgislk
+sudo systemctl status dbms-fgislk
+```
+
+Нет systemd:
+
+```bash
+cd ~/dbms
+. .venv/bin/activate
+fgislk serve
+```
+
+Все три — `200`:
+
+```bash
+curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/ready
+curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8081/ready
+curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8082/health
+```
+
+Витрина: Firefox на этой Ubuntu → [http://127.0.0.1:8082/](http://127.0.0.1:8082/). Чтобы `fgislk` поднимался сам: `sudo systemctl enable --now dbms-fgislk` (unit из шага 5). Compose с `restart: unless-stopped` после reboot обычно уже `Up`.
