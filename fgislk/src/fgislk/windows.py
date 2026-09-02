@@ -87,6 +87,24 @@ def normalize_subject(value: str) -> str:
     return f"{number:02d}"
 
 
+def parse_subjects(value: str) -> list[str]:
+    """Один код или список через запятую: 07 или 07,16,21."""
+    codes: list[str] = []
+    seen: set[str] = set()
+    for part in value.replace(";", ",").split(","):
+        piece = part.strip()
+        if not piece:
+            continue
+        code = normalize_subject(piece)
+        if code in seen:
+            continue
+        seen.add(code)
+        codes.append(code)
+    if not codes:
+        raise ValueError("subject — код 01…99 или список через запятую")
+    return codes
+
+
 def seconds_until_moscow_midnight(now: datetime | None = None) -> float:
     current = now or datetime.now(MSK)
     if current.tzinfo is None:

@@ -12,7 +12,6 @@ REQUIRED_SCHEMA = "0007_taxation_piece_semantic_id"
 DATA_KIND = "taxation_piece"
 DATA_KIND_LABELS = {DATA_KIND: "выделы"}
 DEFAULT_MAX_WORKERS = 10
-MAX_WORKERS_CAP = 25
 ALLOWED_SETTINGS = ("FGIS_MAX_WORKERS", "FGIS_TLS", "FGIS_HOST")
 _SECRET_KEYS = frozenset(
     {
@@ -162,12 +161,13 @@ def fgis_credentials() -> tuple[str, str]:
 
 
 def max_workers() -> int:
+    """Живых HTTP к СПД на процесс (столько же субъектов сразу). По умолчанию 10."""
     raw = _effective("FGIS_MAX_WORKERS") or str(DEFAULT_MAX_WORKERS)
     try:
         value = int(raw)
     except ValueError:
         value = DEFAULT_MAX_WORKERS
-    return max(1, min(value, MAX_WORKERS_CAP))
+    return max(1, value)
 
 
 def listen_port() -> int:
@@ -213,9 +213,9 @@ def _validate_updates(payload: dict) -> dict[str, str | None]:
             try:
                 number = int(text)
             except ValueError as exc:
-                raise ValueError("FGIS_MAX_WORKERS — целое 1…25") from exc
-            if number < 1 or number > MAX_WORKERS_CAP:
-                raise ValueError("FGIS_MAX_WORKERS — целое 1…25")
+                raise ValueError("FGIS_MAX_WORKERS — целое ≥ 1") from exc
+            if number < 1:
+                raise ValueError("FGIS_MAX_WORKERS — целое ≥ 1")
             updates[key] = str(number)
         elif key == "FGIS_TLS":
             lowered = text.lower()

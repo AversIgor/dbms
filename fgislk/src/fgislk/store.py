@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import create_engine, inspect as sa_inspect, text
+from sqlalchemy import bindparam, create_engine, inspect as sa_inspect, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -48,8 +48,11 @@ _RECENT_IDS = text(
     """
     SELECT fgis_id FROM taxation_piece
     WHERE subject = :subject AND read_at >= :since
+      AND fgis_id IN :ids
     """
-)
+).bindparams(bindparam("ids", expanding=True))
+
+_RECENT_ID_CHUNK = 1000
 
 
 def make_engine() -> Engine:
@@ -138,7 +141,28 @@ def unlock_subject(conn: Connection, subject: str) -> None:
 
 
 def upsert_piece(conn: Connection, row: dict[str, Any]) -> None:
-    conn.execute(_UPSERT, row)
+    upsert_pieces(conn, [row])
+
+
+def upsert_pieces(conn: Connection, rows: Sequence[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    conn.execute(
+        _UPSERT,
+        [
+            {
+                "subject": row.get("subject"),
+                "fgis_id": row.get("fgis_id"),
+                "taxation_piece": row.get("taxation_piece"),
+                "quarter": row.get("quarter"),
+                "area": row.get("area"),
+                "status": row.get("status"),
+                "read_at": row.get("read_at"),
+                "actuality_date": row.get("actuality_date"),
+            }
+            for row in rows
+        ],
+    )
 
 
 def recent_read_ids(
@@ -146,12 +170,16 @@ def recent_read_ids(
 ) -> set[str]:
     if not ids:
         return set()
-    wanted = set(ids)
-    rows = conn.execute(
-        _RECENT_IDS,
-        {"subject": subject, "since": since},
-    )
-    return {str(row[0]) for row in rows if row[0] in wanted}
+    found: set[str] = set()
+    unique = list(dict.fromkeys(ids))
+    for offset in range(0, len(unique), _RECENT_ID_CHUNK):
+        chunk = unique[offset : offset + _RECENT_ID_CHUNK]
+        rows = conn.execute(
+            _RECENT_IDS,
+            {"subject": subject, "since": since, "ids": chunk},
+        )
+        found.update(str(row[0]) for row in rows)
+    return found
 
 
 def write_history(

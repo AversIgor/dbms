@@ -15,7 +15,7 @@ from fgislk.store import (
     recent_read_ids,
     try_lock_subject,
     unlock_subject,
-    upsert_piece,
+    upsert_pieces,
     write_history,
 )
 from fgislk.windows import (
@@ -29,7 +29,7 @@ from fgislk.windows import (
 
 log = logging.getLogger(__name__)
 
-FLUSH_BATCH = 50
+FLUSH_BATCH = 100
 
 
 class AlreadyRunning(Exception):
@@ -300,18 +300,30 @@ async def _import_window(
             raise asyncio.CancelledError
         await asyncio.sleep(0)
         chunk = to_fetch[offset : offset + FLUSH_BATCH]
-        try:
-            payloads = await spd.taxation_pieces(chunk)
-        except SpdError:
+        payloads: list[dict[str, Any] | None] | None = None
+        for attempt in range(3):
+            try:
+                payloads = await spd.taxation_pieces(chunk)
+                break
+            except SpdError:
+                log.warning(
+                    "пачка карточек субъекта %s, попытка %s",
+                    subject,
+                    attempt + 1,
+                )
+        if payloads is None:
             log.warning("пачка карточек субъекта %s недоступна", subject)
             continue
+        rows: list[dict[str, Any]] = []
         for fgis_id, payload in zip(chunk, payloads, strict=True):
             if not payload:
                 continue
             row = row_from_payload(subject, fgis_id, payload)
             row["read_at"] = today
-            upsert_piece(conn, row)
-            upserted += 1
+            rows.append(row)
+        if rows:
+            upsert_pieces(conn, rows)
+            upserted += len(rows)
         conn.commit()
         await running.update(subject, updated_count=upserted)
         if commit_every is not None and history_day is not None:
@@ -377,7 +389,6 @@ async def run_subjects(
     require_lock: bool,
     audit_from: date | None = None,
 ) -> None:
-    running.reset()
     targets = subjects if subjects is not None else all_subjects()
     semaphore = asyncio.Semaphore(max_workers())
 
@@ -423,8 +434,15 @@ async def daily_loop(
         first = False
         kick.clear()
         if await running.inflight():
-            continue
+            log.info("ежедневный импорт ждёт текущий прогон")
+            await running.drain()
+            if stop.is_set():
+                return
+            if await running.inflight():
+                await asyncio.sleep(1)
+                continue
         try:
+            running.reset()
 
             async def once() -> None:
                 spd = SpdClient()

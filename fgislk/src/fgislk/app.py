@@ -26,7 +26,12 @@ from fgislk.sync import (
     run_subjects,
     stop_import,
 )
-from fgislk.windows import AUDIT_START, moscow_today, normalize_subject, parse_audit_day
+from fgislk.windows import (
+    AUDIT_START,
+    moscow_today,
+    parse_audit_day,
+    parse_subjects,
+)
 
 
 @asynccontextmanager
@@ -103,9 +108,15 @@ def history(
     code = None
     if subject is not None and subject.strip() != "":
         try:
-            code = normalize_subject(subject)
+            codes = parse_subjects(subject)
         except ValueError as exc:
             return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+        if len(codes) != 1:
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "error": "history — один subject="},
+            )
+        code = codes[0]
     engine = app.state.engine
     return {"rows": history_rows(engine, subject=code, limit=limit)}
 
@@ -151,29 +162,36 @@ async def status(
             view_day = today
         if view_day < AUDIT_START:
             view_day = AUDIT_START
-    code = None
+    codes_filter: list[str] | None = None
     if subject is not None and subject.strip() != "":
         try:
-            code = normalize_subject(subject)
+            codes_filter = parse_subjects(subject)
         except ValueError as exc:
             return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
     kind = (data_kind or "").strip() or None
     revision = db_revision(engine)
     jobs = await running.snapshot()
-    if code is not None:
-        jobs = [job for job in jobs if job["subject"] == code]
+    if codes_filter is not None:
+        wanted = set(codes_filter)
+        jobs = [job for job in jobs if job["subject"] in wanted]
     if kind is not None:
         jobs = [
             job
             for job in jobs
             if (job.get("data_kind") or DATA_KIND) == kind
         ]
+    status_subject = (
+        codes_filter[0] if codes_filter is not None and len(codes_filter) == 1 else None
+    )
     subjects = overlay_status(
-        status_rows(engine, day=view_day, subject=code, data_kind=kind),
+        status_rows(engine, day=view_day, subject=status_subject, data_kind=kind),
         jobs,
         view_day=view_day,
         today=today,
     )
+    if codes_filter is not None and len(codes_filter) > 1:
+        wanted = set(codes_filter)
+        subjects = [row for row in subjects if row["subject"] in wanted]
     live = [row for row in subjects if row["in_progress"]]
     body = {
         "process": "alive",
@@ -238,23 +256,28 @@ async def sync(
         require_lock = False
     else:
         try:
-            codes = [normalize_subject(subject)]
+            codes = parse_subjects(subject)
         except ValueError as exc:
             return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
         require_lock = True
 
     running: RunningSet = app.state.running
     live = await running.codes()
-    if require_lock and codes is not None and codes[0] in live:
-        return JSONResponse(
-            status_code=409,
-            content={"ok": False, "error": f"импорт субъекта {codes[0]} уже идёт"},
-        )
+    if require_lock and codes is not None:
+        overlap = [code for code in codes if code in live]
+        if overlap:
+            shown = ",".join(overlap)
+            return JSONResponse(
+                status_code=409,
+                content={"ok": False, "error": f"импорт субъекта {shown} уже идёт"},
+            )
     if not require_lock and await running.inflight():
         return JSONResponse(
             status_code=409,
             content={"ok": False, "error": "импорт уже идёт; GET /sync?stop=1"},
         )
+    if not await running.inflight():
+        running.reset()
 
     started = {
         "ok": True,

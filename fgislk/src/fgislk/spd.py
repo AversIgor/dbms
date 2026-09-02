@@ -16,16 +16,24 @@ from urllib.parse import urlencode
 
 import httpx
 
-from fgislk.settings import fgis_credentials, fgis_host, fgis_tls
+from fgislk.settings import fgis_credentials, fgis_host, fgis_tls, max_workers
 from fgislk.windows import add_month
 
 _RETRY_ATTEMPTS = 3
 _TIMEOUT_SECONDS = 180
 _STATUS_MARKER = "\n__HTTPSTATUS__"
-SPD_DETAIL_CONCURRENCY = 8
 
 log = logging.getLogger(__name__)
 _active_curl: set[asyncio.subprocess.Process] = set()
+_transfer_sem: asyncio.Semaphore | None = None
+
+
+def _transfers() -> asyncio.Semaphore:
+    """Живых HTTP к СПД на процесс = FGIS_MAX_WORKERS."""
+    global _transfer_sem
+    if _transfer_sem is None:
+        _transfer_sem = asyncio.Semaphore(max_workers())
+    return _transfer_sem
 
 
 def kill_all_curl() -> int:
@@ -279,31 +287,32 @@ class SpdClient:
         if self._gost_conf:
             env = os.environ.copy()
             env["OPENSSL_CONF"] = self._gost_conf
-        proc = await asyncio.create_subprocess_exec(
-            self._curl,
-            "--config",
-            "-",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
-        _active_curl.add(proc)
-        try:
-            stdout, stderr = await proc.communicate(config.encode("utf-8"))
-        except (asyncio.CancelledError, Exception):
-            if proc.returncode is None:
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-                try:
-                    await proc.wait()
-                except Exception:
-                    pass
-            raise
-        finally:
-            _active_curl.discard(proc)
+        async with _transfers():
+            proc = await asyncio.create_subprocess_exec(
+                self._curl,
+                "--config",
+                "-",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            _active_curl.add(proc)
+            try:
+                stdout, stderr = await proc.communicate(config.encode("utf-8"))
+            except (asyncio.CancelledError, Exception):
+                if proc.returncode is None:
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        await proc.wait()
+                    except Exception:
+                        pass
+                raise
+            finally:
+                _active_curl.discard(proc)
         text = stdout.decode("utf-8", errors="replace")
         parsed = parse_curl_responses(text)
         if proc.returncode not in (0, 22) and not any(
@@ -343,9 +352,12 @@ class SpdClient:
                     except json.JSONDecodeError as exc:
                         raise SpdError(f"СПД не JSON {path}: {exc}") from exc
                 assert self._http is not None
-                response = await self._http.get(
-                    self._url(path, params) if params else f"{self._base}/{path.lstrip('/')}"
-                )
+                async with _transfers():
+                    response = await self._http.get(
+                        self._url(path, params)
+                        if params
+                        else f"{self._base}/{path.lstrip('/')}"
+                    )
                 if response.status_code >= 500:
                     last_error = SpdError(
                         f"СПД {response.status_code} {path}: {response.text[:500]}"
@@ -398,17 +410,55 @@ class SpdClient:
     async def taxation_pieces(
         self, fgis_ids: Sequence[str]
     ) -> list[dict[str, Any] | None]:
-        """Карточки параллельно, не больше SPD_DETAIL_CONCURRENCY GET сразу."""
+        """Пачка карточек: один curl на пачку; живых HTTP к СПД не больше FGIS_MAX_WORKERS на процесс."""
         ids = list(fgis_ids)
         if not ids:
             return []
-        sem = asyncio.Semaphore(SPD_DETAIL_CONCURRENCY)
-
-        async def one(fgis_id: str) -> dict[str, Any] | None:
-            async with sem:
-                return await self._card_via_http(fgis_id)
-
-        return list(await asyncio.gather(*[one(fgis_id) for fgis_id in ids]))
+        if not self._curl:
+            return list(
+                await asyncio.gather(
+                    *[self._card_via_http(fgis_id) for fgis_id in ids]
+                )
+            )
+        urls = [self._url(f"taxationPiece/{fgis_id}") for fgis_id in ids]
+        parsed: list[tuple[int, str]] | None = None
+        last_error: Exception | None = None
+        for _attempt in range(_RETRY_ATTEMPTS):
+            try:
+                parsed = await self._curl_exec(urls)
+                break
+            except SpdError as exc:
+                last_error = exc
+                log.warning("пачка карточек СПД: %s", exc)
+        if parsed is None:
+            log.warning(
+                "пачка %s карточек недоступна, по одной: %s",
+                len(ids),
+                last_error,
+            )
+            return list(
+                await asyncio.gather(
+                    *[self._card_via_http(fgis_id) for fgis_id in ids]
+                )
+            )
+        out: list[dict[str, Any] | None] = []
+        retry_ids: list[str] = []
+        retry_at: list[int] = []
+        for index, (status, body) in enumerate(parsed):
+            kind, card = _card_from_status(status, body)
+            if kind == "retry":
+                retry_at.append(index)
+                retry_ids.append(ids[index])
+                out.append(None)
+            else:
+                out.append(card)
+        if retry_ids:
+            recovered = await asyncio.gather(
+                *[self._card_via_http(fgis_id) for fgis_id in retry_ids]
+            )
+            for index, card in zip(retry_at, recovered, strict=True):
+                out[index] = card
+        return out
 
     async def changed_ids(
         self,
@@ -435,3 +485,19 @@ class SpdClient:
                 continue
             return ids_from_payload(data["payload"])
         return []
+
+
+def _card_from_status(
+    status: int, body: str
+) -> tuple[str, dict[str, Any] | None]:
+    if status >= 500 or status == 0:
+        return "retry", None
+    if status >= 400:
+        return "skip", None
+    try:
+        data = json.loads(body) if body.strip() else {}
+    except json.JSONDecodeError:
+        return "retry", None
+    if not isinstance(data, dict):
+        return "skip", None
+    return "ok", _card_from_response(data)

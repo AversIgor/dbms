@@ -60,7 +60,7 @@ def panel_manifest() -> dict:
                         "name": "subject",
                         "type": "text",
                         "optional": True,
-                        "label": "Субъект",
+                        "label": "Субъект (07 или 07,16,21)",
                     }
                 ],
             },
@@ -75,7 +75,7 @@ def panel_manifest() -> dict:
                         "name": "subject",
                         "type": "text",
                         "optional": True,
-                        "label": "Субъект",
+                        "label": "Субъект (07 или 07,16,21)",
                     },
                     {
                         "name": "day",
