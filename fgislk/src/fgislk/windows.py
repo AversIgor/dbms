@@ -27,17 +27,18 @@ def audit_read_since(today: date | None = None) -> date:
 
 def incremental_window(
     last_ok: date | None, today: date | None = None
-) -> tuple[date, date] | None:
-    """Окно догона к СПД: (last_ok+1)…сегодня; без истории — вчера…сегодня.
+) -> tuple[date, date]:
+    """Окно догона к СПД: (last_ok+1)…сегодня, старт не позже вчера.
 
     endDate для ФГИС — сегодня, иначе вчера в выборку не попадает.
-    Закрываемый день журнала — вчера. None — вчера уже закрыто.
+    Закрываемый день журнала — вчера. Если вчера уже в watermark —
+    всё равно вчера…сегодня: за вчера ещё могли прийти обновления.
     """
     today = today or moscow_today()
     closed = today - timedelta(days=1)
     start = closed if last_ok is None else last_ok + timedelta(days=1)
     if start > closed:
-        return None
+        start = closed
     return start, today
 
 

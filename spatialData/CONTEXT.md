@@ -33,6 +33,7 @@
 | `status` | varchar(10) | status |
 | `read_at` | date | дата чтения из СПД |
 | `actuality_date` | date | дата актуальности (появление в ФГИС ЛК, `modifyDttm` СПД) |
+| `semantic_id` | integer | идентификатор семантики WFS (`TAXATION_PIECE.{id}`) |
 | `geom` | geometry | контур |
 
 ## Ограничения и допущения

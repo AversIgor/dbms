@@ -18,7 +18,7 @@ from fgislk.windows import add_month
 _RETRY_ATTEMPTS = 3
 _TIMEOUT_SECONDS = 180
 _STATUS_MARKER = "\n__HTTPSTATUS__"
-CURL_KEEPALIVE_BATCH = 1000
+SPD_DETAIL_CONCURRENCY = 8
 
 log = logging.getLogger(__name__)
 _active_curl: set[asyncio.subprocess.Process] = set()
@@ -280,74 +280,23 @@ class SpdClient:
             return None
         return _card_from_response(data)
 
-    def _card_payload(self, body: str, path: str) -> dict[str, Any] | None:
-        try:
-            data = json.loads(body) if body.strip() else {}
-        except json.JSONDecodeError:
-            log.warning("СПД не JSON %s", path)
-            return None
-        if not isinstance(data, dict):
-            return None
-        return _card_from_response(data)
-
     async def taxation_piece(self, fgis_id: str) -> dict[str, Any] | None:
-        return (await self.taxation_pieces([fgis_id]))[0]
+        return await self._card_via_http(fgis_id)
 
     async def taxation_pieces(
         self, fgis_ids: Sequence[str]
     ) -> list[dict[str, Any] | None]:
-        """Карточки по очереди; пачка — один curl.exe, HTTP/1.1 keep-alive."""
+        """Карточки параллельно, не больше SPD_DETAIL_CONCURRENCY GET сразу."""
         ids = list(fgis_ids)
         if not ids:
             return []
-        out: list[dict[str, Any] | None] = []
-        for offset in range(0, len(ids), CURL_KEEPALIVE_BATCH):
-            chunk = ids[offset : offset + CURL_KEEPALIVE_BATCH]
-            out.extend(await self._taxation_pieces_batch(chunk))
-        return out
+        sem = asyncio.Semaphore(SPD_DETAIL_CONCURRENCY)
 
-    async def _taxation_pieces_batch(
-        self, fgis_ids: list[str]
-    ) -> list[dict[str, Any] | None]:
-        if not self._curl:
-            return [await self._card_via_http(fgis_id) for fgis_id in fgis_ids]
-        urls = [self._url(f"taxationPiece/{fgis_id}") for fgis_id in fgis_ids]
-        pending = list(range(len(fgis_ids)))
-        raw: list[tuple[int, str] | None] = [None] * len(fgis_ids)
-        last_error: Exception | None = None
-        for _ in range(_RETRY_ATTEMPTS):
-            if not pending:
-                break
-            batch_urls = [urls[index] for index in pending]
-            try:
-                parsed = await self._curl_exec(batch_urls)
-            except SpdError as exc:
-                last_error = exc
-                continue
-            next_pending: list[int] = []
-            for index, (status, body) in zip(pending, parsed, strict=True):
-                path = f"taxationPiece/{fgis_ids[index]}"
-                if status >= 500:
-                    last_error = SpdError(f"СПД {status} {path}: {body[:500]}")
-                    next_pending.append(index)
-                    continue
-                raw[index] = (status, body)
-            pending = next_pending
-        result: list[dict[str, Any] | None] = []
-        for index, fgis_id in enumerate(fgis_ids):
-            item = raw[index]
-            path = f"taxationPiece/{fgis_id}"
-            if item is None:
-                log.warning("карточка %s недоступна: %s", fgis_id, last_error)
-                result.append(None)
-                continue
-            status, body = item
-            if status >= 400:
-                log.warning("карточка %s: СПД %s", fgis_id, status)
-                result.append(None)
-                continue
-            result.append(self._card_payload(body, path))
-        return result
+        async def one(fgis_id: str) -> dict[str, Any] | None:
+            async with sem:
+                return await self._card_via_http(fgis_id)
+
+        return list(await asyncio.gather(*[one(fgis_id) for fgis_id in ids]))
 
     async def changed_ids(
         self,

@@ -12,10 +12,12 @@ from fgislk.gate import migrate_ready, wait_schema
 from fgislk.panel import panel_manifest
 from fgislk.settings import DATA_KIND, REQUIRED_SCHEMA, apply_settings, settings_view
 from fgislk.spd import SpdClient
+from fgislk.wfs import WfsClient
 from fgislk.store import (
     db_revision,
     history_rows,
     make_engine,
+    geom_count_by_subject,
     overlay_status,
     status_day_meta,
     status_rows,
@@ -174,6 +176,9 @@ async def status(
         view_day=view_day,
         today=today,
     )
+    geom_counts = geom_count_by_subject(engine)
+    for row in subjects:
+        row["geom_count"] = geom_counts.get(row["subject"], 0)
     live = [row for row in subjects if row["in_progress"]]
     body = {
         "process": "alive",
@@ -195,6 +200,7 @@ async def sync(
     stop: str | None = Query(default=None),
     subject: str | None = Query(default=None),
     day: str | None = Query(default=None),
+    wfs: str | None = Query(default=None),
 ):
     want_start = _truthy(start)
     want_audit = _truthy(audit)
@@ -256,9 +262,12 @@ async def sync(
             content={"ok": False, "error": "импорт уже идёт; GET /sync?stop=1"},
         )
 
+    fetch_wfs = True if want_start or not want_audit else _truthy(wfs)
+
     started = {
         "ok": True,
         "audit": want_audit,
+        "wfs": fetch_wfs,
         "day": audit_from.isoformat() if audit_from is not None else None,
         "subjects": codes if codes is not None else "01-99",
     }
@@ -271,18 +280,22 @@ async def sync(
 
     async def job() -> None:
         spd = SpdClient()
+        wfs = WfsClient()
         try:
             await run_subjects(
                 engine=engine,
                 spd=spd,
+                wfs=wfs,
                 running=running,
                 subjects=codes,
                 audit=want_audit,
                 require_lock=require_lock,
                 audit_from=audit_from,
+                fetch_wfs=fetch_wfs,
             )
         finally:
             await spd.aclose()
+            await wfs.aclose()
 
     running.track(asyncio.create_task(job()))
     return JSONResponse(status_code=202, content=started)

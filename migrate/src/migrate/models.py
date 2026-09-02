@@ -46,6 +46,9 @@ class TaxationPiece(Base):
     actuality_date: Mapped[date | None] = mapped_column(
         Date, comment="дата актуальности (появление в ФГИС ЛК)"
     )
+    semantic_id: Mapped[int | None] = mapped_column(
+        Integer, comment="идентификатор семантики WFS (TAXATION_PIECE.{id})"
+    )
     geom: Mapped[object | None] = mapped_column(
         Geometry(geometry_type="GEOMETRY", spatial_index=False),
         comment="контур",

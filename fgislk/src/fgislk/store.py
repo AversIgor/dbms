@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -73,11 +74,11 @@ def db_revision(eng: Engine) -> str | None:
 
 
 def last_ok_day(conn: Connection, subject: str) -> date | None:
-    """Закрытый день инкремента: только ok с окном СПД не-аудита.
+    """Закрытый день: ok с окном СПД (инкремент и аудит, day = вчера прогона).
 
-    Аудит (period_start = 2023-05-01) даёт day конца окна — для догона это ещё
-    не закрытый календарный день (watermark = day − 1). Строка без окна
-    (старый ok, skip) день не закрывает. Последняя error — повторить её day.
+    Старые строки аудита писали в day конец окна (сегодня прогона) — для них
+    watermark = day − 1, иначе следующий инкремент пропускает вчера.
+    Без окна день не закрывает. Последняя error — повторить её day.
     """
     watermark = conn.execute(
         text(
@@ -85,7 +86,8 @@ def last_ok_day(conn: Connection, subject: str) -> date | None:
             SELECT MAX(
                 CASE
                     WHEN period_start IS NULL THEN NULL
-                    WHEN period_start = CAST(:audit_start AS date) THEN (day - 1)
+                    WHEN period_start = CAST(:audit_start AS date)
+                         AND day = period_end THEN (day - 1)
                     ELSE day
                 END
             )
@@ -139,9 +141,56 @@ def upsert_piece(conn: Connection, row: dict[str, Any]) -> None:
     conn.execute(_UPSERT, row)
 
 
-def recent_read_ids(conn: Connection, subject: str, since: date) -> set[str]:
-    rows = conn.execute(_RECENT_IDS, {"subject": subject, "since": since})
-    return {str(row[0]) for row in rows}
+_UPDATE_CONTOUR_SEMANTIC = text(
+    """
+    UPDATE taxation_piece SET
+        semantic_id = COALESCE(:semantic_id, semantic_id)
+    WHERE subject = :subject AND fgis_id = :fgis_id
+    """
+)
+
+_UPDATE_CONTOUR_GEOM = text(
+    """
+    UPDATE taxation_piece SET
+        semantic_id = COALESCE(:semantic_id, semantic_id),
+        geom = ST_SetSRID(ST_GeomFromGeoJSON(:geom_json), 4326)
+    WHERE subject = :subject AND fgis_id = :fgis_id
+    """
+)
+
+
+def update_contour(
+    conn: Connection,
+    *,
+    subject: str,
+    fgis_id: str,
+    semantic_id: int | None,
+    geom_json: str | None,
+) -> None:
+    if semantic_id is None and geom_json is None:
+        return
+    params = {
+        "subject": subject,
+        "fgis_id": fgis_id,
+        "semantic_id": semantic_id,
+    }
+    if geom_json is not None:
+        conn.execute(_UPDATE_CONTOUR_GEOM, {**params, "geom_json": geom_json})
+    else:
+        conn.execute(_UPDATE_CONTOUR_SEMANTIC, params)
+
+
+def recent_read_ids(
+    conn: Connection, subject: str, since: date, ids: Sequence[str]
+) -> set[str]:
+    if not ids:
+        return set()
+    wanted = set(ids)
+    rows = conn.execute(
+        _RECENT_IDS,
+        {"subject": subject, "since": since},
+    )
+    return {str(row[0]) for row in rows if row[0] in wanted}
 
 
 def write_history(
@@ -302,6 +351,20 @@ def overlay_status(
         out.append(item)
     out.sort(key=lambda row: (not row.get("in_progress"), row["subject"]))
     return out
+
+
+def geom_count_by_subject(eng: Engine) -> dict[str, int]:
+    sql = text(
+        """
+        SELECT subject, COUNT(*)::int AS geom_count
+        FROM taxation_piece
+        WHERE geom IS NOT NULL
+        GROUP BY subject
+        """
+    )
+    with eng.connect() as conn:
+        rows = conn.execute(sql).all()
+    return {str(row[0]): int(row[1]) for row in rows}
 
 
 def status_day_meta(view_day: date, today: date) -> dict[str, str | None]:

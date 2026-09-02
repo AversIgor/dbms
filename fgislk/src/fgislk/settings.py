@@ -8,9 +8,10 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 
-REQUIRED_SCHEMA = "0006_actuality_date"
+REQUIRED_SCHEMA = "0007_taxation_piece_semantic_id"
 DATA_KIND = "taxation_piece"
 DATA_KIND_LABELS = {DATA_KIND: "выделы"}
+DEFAULT_MAX_WORKERS = 10
 MAX_WORKERS_CAP = 25
 ALLOWED_SETTINGS = ("FGIS_MAX_WORKERS", "FGIS_TLS", "FGIS_HOST")
 _SECRET_KEYS = frozenset(
@@ -141,6 +142,17 @@ def fgis_host() -> str:
     return raw or "fgislk.gov.ru"
 
 
+def pub_fgis_base_url() -> str:
+    host = fgis_host().rstrip("/")
+    if host.startswith("http://") or host.startswith("https://"):
+        base = host.rstrip("/")
+    else:
+        if not host.startswith("pub."):
+            host = f"pub.{host}"
+        base = f"https://{host}"
+    return base
+
+
 def fgis_tls() -> str:
     """schannel — Windows curl.exe; openssl — Linux curl/httpx. Пусто — по ОС."""
     raw = (_effective("FGIS_TLS") or "").strip().lower()
@@ -161,11 +173,11 @@ def fgis_credentials() -> tuple[str, str]:
 
 
 def max_workers() -> int:
-    raw = _effective("FGIS_MAX_WORKERS") or "25"
+    raw = _effective("FGIS_MAX_WORKERS") or str(DEFAULT_MAX_WORKERS)
     try:
         value = int(raw)
     except ValueError:
-        value = 25
+        value = DEFAULT_MAX_WORKERS
     return max(1, min(value, MAX_WORKERS_CAP))
 
 
