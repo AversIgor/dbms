@@ -3,10 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
 import ssl
+import sys
+import tempfile
 from collections.abc import Sequence
 from datetime import date
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
@@ -62,11 +66,74 @@ def spd_base_url(host: str | None = None) -> str:
     )
 
 
+_GOST_CIPHER = "GOST2012-GOST8912-GOST8912"
+_GOST_SO_CANDIDATES = (
+    Path("/usr/lib/x86_64-linux-gnu/engines-3/gost.so"),
+    Path("/usr/lib/aarch64-linux-gnu/engines-3/gost.so"),
+    Path("/usr/lib/engines-3/gost.so"),
+)
+_GOST_CNF_TEMPLATE = """\
+openssl_conf = openssl_def
+
+[openssl_def]
+engines = engine_section
+
+[engine_section]
+gost = gost_section
+
+[gost_section]
+engine_id = gost
+dynamic_path = {path}
+default_algorithms = ALL
+init = 1
+"""
+
+
 def find_curl() -> str | None:
-    """schannel: curl.exe; openssl — системный curl (SECLEVEL=1)."""
+    """schannel: Windows curl.exe; openssl — системный curl."""
     if fgis_tls() == "schannel":
         return shutil.which("curl.exe")
     return shutil.which("curl")
+
+
+def gost_engine_path() -> Path | None:
+    raw = os.environ.get("FGIS_GOST_ENGINE", "").strip()
+    if raw:
+        path = Path(raw)
+        return path if path.is_file() else None
+    for path in _GOST_SO_CANDIDATES:
+        if path.is_file():
+            return path
+    return None
+
+
+def openssl_gost_conf_path() -> str | None:
+    """Конфиг OpenSSL с gost-engine. Windows / schannel не вызывают."""
+    raw = os.environ.get("FGIS_OPENSSL_CONF", "").strip()
+    if raw:
+        path = Path(raw)
+        return str(path) if path.is_file() else None
+    so = gost_engine_path()
+    if so is None:
+        return None
+    system = Path("/etc/ssl/fgislk-openssl-gost.cnf")
+    if system.is_file():
+        return str(system)
+    bundled = Path(__file__).resolve().parent.parent.parent / "openssl-gost.cnf"
+    if bundled.is_file() and so.as_posix() in bundled.read_text(encoding="utf-8"):
+        return str(bundled)
+    generated = Path(tempfile.gettempdir()) / "fgislk-openssl-gost.cnf"
+    payload = _GOST_CNF_TEMPLATE.format(path=so.as_posix())
+    try:
+        if not generated.is_file() or generated.read_text(encoding="utf-8") != payload:
+            generated.write_text(payload, encoding="utf-8")
+    except OSError:
+        return None
+    return str(generated)
+
+
+def _linux_openssl_gost() -> bool:
+    return fgis_tls() == "openssl" and sys.platform != "win32"
 
 
 def _curl_config_escape(value: str) -> str:
@@ -91,7 +158,7 @@ def parse_curl_responses(text: str) -> list[tuple[int, str]]:
 
 
 def _curl_transfer_lines(
-    url: str, login: str, password: str, *, schannel: bool
+    url: str, login: str, password: str, *, schannel: bool, gost: bool = False
 ) -> list[str]:
     lines = [
         "silent",
@@ -104,14 +171,29 @@ def _curl_transfer_lines(
         f'url = "{_curl_config_escape(url)}"',
         'write-out = "\\n__HTTPSTATUS__%{http_code}\\n"',
     ]
-    if not schannel:
-        lines.insert(0, "tlsv1.2")
-        lines.insert(1, 'ciphers = "DEFAULT:@SECLEVEL=1"')
+    if schannel:
+        return lines
+    if gost:
+        lines[0:0] = [
+            "tlsv1.2",
+            "tls-max = 1.2",
+            f'ciphers = "{_GOST_CIPHER}"',
+            "ipv4",
+            "insecure",
+        ]
+        return lines
+    lines.insert(0, "tlsv1.2")
+    lines.insert(1, 'ciphers = "DEFAULT:@SECLEVEL=1"')
     return lines
 
 
 def curl_config(
-    url: str | Sequence[str], login: str, password: str, *, schannel: bool
+    url: str | Sequence[str],
+    login: str,
+    password: str,
+    *,
+    schannel: bool,
+    gost: bool = False,
 ) -> str:
     urls = [url] if isinstance(url, str) else list(url)
     if not urls:
@@ -121,7 +203,9 @@ def curl_config(
         if index:
             lines.append("next")
         lines.extend(
-            _curl_transfer_lines(item, login, password, schannel=schannel)
+            _curl_transfer_lines(
+                item, login, password, schannel=schannel, gost=gost
+            )
         )
     return "\n".join(lines)
 
@@ -138,6 +222,8 @@ class SpdClient:
         self._base = (base_url or spd_base_url()).rstrip("/")
         self._login, self._password = fgis_credentials()
         self._schannel = fgis_tls() == "schannel"
+        self._gost = _linux_openssl_gost()
+        self._gost_conf = openssl_gost_conf_path() if self._gost else None
         self._curl = find_curl()
         self._http: httpx.AsyncClient | None = None
         if self._schannel and not self._curl:
@@ -146,6 +232,18 @@ class SpdClient:
                 "(curl.exe). Запустите fgislk на хосте: .\\fgislk\\run.ps1 — "
                 "не в Linux-контейнере Docker. Либо FGIS_TLS=openssl."
             )
+        if self._gost:
+            if not self._curl:
+                raise SpdError(
+                    "FGIS_TLS=openssl: нужен системный curl "
+                    "(sudo apt install curl)"
+                )
+            if not self._gost_conf:
+                raise SpdError(
+                    "fgislk.gov.ru требует GOST-TLS "
+                    f"(шифр {_GOST_CIPHER}). На Ubuntu: "
+                    "sudo bash fgislk/install_gost_engine.sh"
+                )
         if not self._curl:
             self._http = httpx.AsyncClient(
                 timeout=_TIMEOUT_SECONDS,
@@ -171,8 +269,16 @@ class SpdClient:
             raise RuntimeError("curl не найден")
         url_list = list(urls)
         config = curl_config(
-            url_list, self._login, self._password, schannel=self._schannel
+            url_list,
+            self._login,
+            self._password,
+            schannel=self._schannel,
+            gost=self._gost,
         )
+        env = None
+        if self._gost_conf:
+            env = os.environ.copy()
+            env["OPENSSL_CONF"] = self._gost_conf
         proc = await asyncio.create_subprocess_exec(
             self._curl,
             "--config",
@@ -180,6 +286,7 @@ class SpdClient:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         _active_curl.add(proc)
         try:
@@ -205,6 +312,11 @@ class SpdClient:
             err = stderr.decode("utf-8", errors="replace").strip() or (
                 f"curl exit {proc.returncode}"
             )
+            if "0A000410" in err or "handshake failure" in err.lower():
+                err = (
+                    f"{err}; СПД требует gost-engine: "
+                    "sudo bash fgislk/install_gost_engine.sh"
+                )
             raise SpdError(err)
         if len(parsed) != len(url_list):
             raise SpdError(

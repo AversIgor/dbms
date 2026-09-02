@@ -25,7 +25,7 @@
 - Отправка в ФГИС, XML, PDF и СМЭВ — не это приложение и не в контуре.
 - fgislk карту не публикует; пишет таблицы Spatial data.
 - Контур из СПД не пишем: `geom` и `semantic_id` — из WFS GeoServer (`pub.{FGIS_HOST}`), заголовок `Referer: …/map/`. WFS — POST `GetFeature` на `/map/geo/geoserver/wms`, пачки по 100, фильтр FES `externalid` (`Or`). CQL `IN` портал отвечает 403. `semantic_id` — число из feature `id` (`TAXATION_PIECE.{id}`); для других запросов к порталу, пока только хранение. При upsert семантики СПД геометрию не трогаем; WFS обновляет `geom` и `semantic_id` отдельным `UPDATE`.
-- HTTPS к порталу: `FGIS_TLS` в `.env`. Пусто — `schannel` на Windows, `openssl` на Linux. `schannel` — только **Windows** `curl.exe` **(Schannel)**, как НСИ в mirror. OpenSSL в Python и Linux-Docker рвут handshake (`error:0A000410`). `openssl` — системный `curl` (`SECLEVEL=1`) или httpx. Запуск к порталу: `fgislk/run.ps1` на хосте. 
+- HTTPS к порталу: `FGIS_TLS` в `.env`. Пусто — `schannel` на Windows, `openssl` на Linux. `schannel` — только **Windows** `curl.exe` **(Schannel)**; этот путь не менять. СПД `fgislk.gov.ru` на Linux без gost-engine даёт `error:0A000410`. `openssl` — системный `curl` с gost-engine (`GOST2012-GOST8912-GOST8912`, `OPENSSL_CONF`, `-k`); установка `sudo bash fgislk/install_gost_engine.sh`. WFS `pub.fgislk.gov.ru` — обычный TLS. Windows: `fgislk/run.ps1`. 
 - Год лесоустройства не маппим.
 - Настройки allowlist (`FGIS_MAX_WORKERS`, `FGIS_TLS`, `FGIS_HOST`) можно менять через `PUT /settings`: overlay-файл (`FGISLK_SETTINGS_FILE`, иначе `fgislk-settings.json` в cwd) поверх `.env`. Пул SQLAlchemy с размера на старте не пересобирается. Рестарт без файла возвращает значения `.env`. Секреты и `POSTGRES_*` через API нельзя.
 
@@ -33,7 +33,7 @@
 
 ## Интерфейсы
 
-- **ИС ФГИС ЛК:** СПД `taxationPiece/changedOverPeriod` и `taxationPiece/{id}`; заголовки `login` / `password` из `.env`. WFS POST `GetFeature` слоя `FOREST_LAYERS:TAXATION_PIECE` на `/map/geo/geoserver/wms`, пачки по 100, FES `externalid`, `Referer: {pub}/map/`. TLS: `FGIS_TLS` (`schannel` / `openssl`).
+- **ИС ФГИС ЛК:** СПД `taxationPiece/changedOverPeriod` и `taxationPiece/{id}`; заголовки `login` / `password` из `.env`. WFS POST `GetFeature` слоя `FOREST_LAYERS:TAXATION_PIECE` на `/map/geo/geoserver/wms`, пачки по 100, FES `externalid`, `Referer: {pub}/map/`. TLS: `FGIS_TLS` (`schannel` / `openssl`); на Linux СПД — gost-engine.
 - **Postgres:** те же `POSTGRES_`*, запись в `taxation_piece` и `fgis_import_history`.
 - **migrate:** `/ready` и `REQUIRED_SCHEMA` перед стартом.
 - **HTTP:** `/health`, `/ready`, `/status` (`day` = дата запроса `period_end`, `subject`, `data_kind`; `running` = живые воркеры; при совпадении `period_end` — `in_progress` / `result=running` / период / `updated_count`; `geom_count` — число строк субъекта в `taxation_piece` с `geom IS NOT NULL`; прошлый журнал в `last`). `GET /panel` — манифест для admin (колонки, фильтры, пагинация по дате запроса). `GET /history` — журнал `fgis_import_history` (HTTP, не витрина). `GET`/`PUT /settings` — allowlist. Ручные прогоны (порт `FGISLK_PORT`, по умолчанию 8081):

@@ -154,7 +154,7 @@ def pub_fgis_base_url() -> str:
 
 
 def fgis_tls() -> str:
-    """schannel — Windows curl.exe; openssl — Linux curl/httpx. Пусто — по ОС."""
+    """schannel — Windows curl.exe; openssl — Linux curl + gost-engine. Пусто — по ОС."""
     raw = (_effective("FGIS_TLS") or "").strip().lower()
     if raw in {"schannel", "openssl"}:
         return raw
