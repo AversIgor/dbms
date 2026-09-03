@@ -94,6 +94,12 @@ def panel_manifest() -> dict:
                         "optional": True,
                         "label": "кварталы",
                     },
+                    {
+                        "name": "area",
+                        "type": "checkbox",
+                        "optional": True,
+                        "label": "координаты",
+                    },
                 ],
             },
             {

@@ -70,7 +70,90 @@ def _date(value: Any) -> date | None:
     return parsed.astimezone(MSK).date()
 
 
+def _coord(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:  # NaN
+        return None
+    return format(number, ".15g")
+
+
+def _ring_wkt(points: list[Any]) -> str | None:
+    ordered = sorted(
+        (p for p in points if isinstance(p, dict)),
+        key=lambda p: (p.get("pointNumber") is None, p.get("pointNumber") or 0),
+    )
+    coords: list[str] = []
+    for point in ordered:
+        x = _coord(point.get("longitude"))
+        y = _coord(point.get("latitude"))
+        if x is None or y is None:
+            continue
+        coords.append(f"{x} {y}")
+    if len(coords) < 3:
+        return None
+    if coords[0] != coords[-1]:
+        coords.append(coords[0])
+    if len(coords) < 4:
+        return None
+    return "(" + ", ".join(coords) + ")"
+
+
+def _area_blob(payload: dict[str, Any]) -> dict[str, Any] | None:
+    blob = payload.get("area")
+    if not isinstance(blob, dict):
+        return None
+    nested = blob.get("area")
+    if "contours" not in blob and isinstance(nested, dict):
+        blob = nested
+    return blob if isinstance(blob, dict) else None
+
+
+def geom_from_payload(payload: dict[str, Any]) -> tuple[str | None, str | None]:
+    blob = _area_blob(payload)
+    if blob is None:
+        return None, None
+    crs = _clip(blob.get("coordinateSystemCode"), 50)
+    contours = blob.get("contours")
+    if not isinstance(contours, list):
+        return None, crs
+    polygons: list[str] = []
+    for contour in contours:
+        if not isinstance(contour, dict):
+            continue
+        inners = contour.get("innerContours")
+        if not isinstance(inners, list):
+            continue
+        rings = sorted(
+            (item for item in inners if isinstance(item, dict)),
+            key=lambda item: (
+                item.get("innerContourNumber") is None,
+                item.get("innerContourNumber") or 0,
+            ),
+        )
+        ring_wkt: list[str] = []
+        for ring in rings:
+            points = ring.get("innerContourCoordinates")
+            if not isinstance(points, list):
+                continue
+            wkt = _ring_wkt(points)
+            if wkt:
+                ring_wkt.append(wkt)
+        if ring_wkt:
+            polygons.append("(" + ", ".join(ring_wkt) + ")")
+    if not polygons:
+        return None, crs
+    if len(polygons) == 1:
+        return "POLYGON" + polygons[0], crs
+    return "MULTIPOLYGON(" + ", ".join(polygons) + ")", crs
+
+
 def row_from_payload(subject: str, fgis_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    geom, crs = geom_from_payload(payload)
     return {
         "subject": _clip(subject, 3),
         "fgis_id": _clip(fgis_id, 50),
@@ -80,12 +163,15 @@ def row_from_payload(subject: str, fgis_id: str, payload: dict[str, Any]) -> dic
         "status": _clip(payload.get("statusInd"), 10),
         "actuality_date": _date(payload.get("modifyDttm")),
         "data_kind": KIND_TAXATION_PIECE,
+        "geom": geom,
+        "crs": crs,
     }
 
 
 def quarter_row_from_payload(
     subject: str, fgis_id: str, payload: dict[str, Any]
 ) -> dict[str, Any]:
+    geom, crs = geom_from_payload(payload)
     row: dict[str, Any] = {
         "subject": _clip(subject, 3),
         "fgis_id": _clip(fgis_id, 50),
@@ -97,6 +183,8 @@ def quarter_row_from_payload(
         "status": _clip(payload.get("statusInd"), 10),
         "actuality_date": _date(payload.get("modifyDttm")),
         "data_kind": KIND_QUARTERS,
+        "geom": geom,
+        "crs": crs,
     }
     return row
 

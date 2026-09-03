@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 
-REQUIRED_SCHEMA = "0008_quarters"
+REQUIRED_SCHEMA = "0010_crs"
 KIND_QUARTERS = "quarters"
 KIND_TAXATION_PIECE = "taxation_piece"
 DATA_KIND = KIND_TAXATION_PIECE

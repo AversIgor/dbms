@@ -232,6 +232,7 @@ async def sync(
     day: str | None = Query(default=None),
     quarters: str | None = Query(default=None),
     taxation_piece: str | None = Query(default=None),
+    area: str | None = Query(default=None),
 ):
     want_start = _truthy(start)
     want_audit = _truthy(audit)
@@ -262,6 +263,12 @@ async def sync(
             status_code=400,
             content={"ok": False, "error": "quarters= и taxation_piece= только с audit=1"},
         )
+    has_area_flag = area is not None and area.strip() != ""
+    if has_area_flag and not want_audit and not want_start:
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "area= только с audit=1"},
+        )
     if want_stop:
         if subject is not None and subject.strip() != "":
             return JSONResponse(
@@ -286,6 +293,8 @@ async def sync(
                 status_code=400,
                 content={"ok": False, "error": "аудит: отметьте выделы и/или кварталы"},
             )
+
+    need_area = True if want_start else _truthy(area)
 
     codes: list[str] | None
     if subject is None or subject.strip() == "":
@@ -322,6 +331,7 @@ async def sync(
         "day": audit_from.isoformat() if audit_from is not None else None,
         "subjects": codes if codes is not None else "01-99",
         "kinds": kinds if kinds is not None else list(IMPORT_ORDER),
+        "area": need_area,
     }
     if want_start and codes is None:
         kick: asyncio.Event = app.state.kick
@@ -342,6 +352,7 @@ async def sync(
                 require_lock=require_lock,
                 audit_from=audit_from,
                 kinds=kinds,
+                need_area=need_area,
             )
         finally:
             await spd.aclose()

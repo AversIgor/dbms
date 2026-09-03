@@ -151,6 +151,7 @@ async def run_subject(
     require_lock: bool,
     audit_from: date | None = None,
     kinds: list[str] | None = None,
+    need_area: bool = True,
 ) -> str:
     conn = engine.connect()
     gen: int | None = None
@@ -214,6 +215,7 @@ async def run_subject(
                         ),
                         read_at=today,
                         history_day=history_day,
+                        need_area=need_area,
                     )
                     if not running.same_gen(gen) or running.halted():
                         return "stopped"
@@ -301,6 +303,7 @@ async def _import_window(
     fresh_since: date | None = None,
     read_at: date | None = None,
     history_day: date | None = None,
+    need_area: bool = True,
 ) -> int:
     async def on_window(query_start: date, query_end: date) -> None:
         if not running.same_gen(gen) or running.halted():
@@ -352,7 +355,9 @@ async def _import_window(
         payloads: list[dict[str, Any] | None] | None = None
         for attempt in range(3):
             try:
-                payloads = await spd.cards(chunk, resource=SPD_RESOURCE[kind])
+                payloads = await spd.cards(
+                    chunk, resource=SPD_RESOURCE[kind], need_area=need_area
+                )
                 break
             except SpdError:
                 log.warning(
@@ -453,6 +458,7 @@ async def run_subjects(
     require_lock: bool,
     audit_from: date | None = None,
     kinds: list[str] | None = None,
+    need_area: bool = True,
 ) -> None:
     targets = subjects if subjects is not None else all_subjects()
     semaphore = asyncio.Semaphore(max_workers())
@@ -468,6 +474,7 @@ async def run_subjects(
                 require_lock=require_lock,
                 audit_from=audit_from,
                 kinds=kinds,
+                need_area=need_area,
             )
 
     tasks = [running.track(asyncio.create_task(one(code))) for code in targets]

@@ -399,11 +399,12 @@ class SpdClient:
         return data
 
     async def _card_via_http(
-        self, fgis_id: str, *, resource: str
+        self, fgis_id: str, *, resource: str, need_area: bool = False
     ) -> dict[str, Any] | None:
         path = f"{resource}/{fgis_id}"
+        params = {"isNeedArea": "true"} if need_area else None
         try:
-            data = await self._get(path)
+            data = await self._get(path, params)
         except SpdError as exc:
             log.warning("карточка %s недоступна: %s", fgis_id, exc)
             return None
@@ -412,22 +413,25 @@ class SpdClient:
         return _card_from_response(data)
 
     async def cards(
-        self, fgis_ids: Sequence[str], *, resource: str
+        self, fgis_ids: Sequence[str], *, resource: str, need_area: bool = False
     ) -> list[dict[str, Any] | None]:
         """Пачка карточек: один curl на пачку; живых HTTP к СПД не больше http_workers() на процесс."""
         ids = list(fgis_ids)
         if not ids:
             return []
+        params = {"isNeedArea": "true"} if need_area else None
         if not self._curl:
             return list(
                 await asyncio.gather(
                     *[
-                        self._card_via_http(fgis_id, resource=resource)
+                        self._card_via_http(
+                            fgis_id, resource=resource, need_area=need_area
+                        )
                         for fgis_id in ids
                     ]
                 )
             )
-        urls = [self._url(f"{resource}/{fgis_id}") for fgis_id in ids]
+        urls = [self._url(f"{resource}/{fgis_id}", params) for fgis_id in ids]
         parsed: list[tuple[int, str]] | None = None
         last_error: Exception | None = None
         for _attempt in range(_RETRY_ATTEMPTS):
@@ -446,7 +450,9 @@ class SpdClient:
             return list(
                 await asyncio.gather(
                     *[
-                        self._card_via_http(fgis_id, resource=resource)
+                        self._card_via_http(
+                            fgis_id, resource=resource, need_area=need_area
+                        )
                         for fgis_id in ids
                     ]
                 )
@@ -465,7 +471,9 @@ class SpdClient:
         if retry_ids:
             recovered = await asyncio.gather(
                 *[
-                    self._card_via_http(fgis_id, resource=resource)
+                    self._card_via_http(
+                        fgis_id, resource=resource, need_area=need_area
+                    )
                     for fgis_id in retry_ids
                 ]
             )

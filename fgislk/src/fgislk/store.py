@@ -15,11 +15,11 @@ _UPSERT = text(
     """
     INSERT INTO taxation_piece (
         subject, fgis_id, taxation_piece, quarter, area, status, read_at,
-        actuality_date
+        actuality_date, geom, crs
     )
     VALUES (
         :subject, :fgis_id, :taxation_piece, :quarter, :area, :status, :read_at,
-        :actuality_date
+        :actuality_date, ST_GeomFromText(:geom), :crs
     )
     ON CONFLICT (subject, fgis_id) DO UPDATE SET
         taxation_piece = EXCLUDED.taxation_piece,
@@ -27,7 +27,9 @@ _UPSERT = text(
         area = EXCLUDED.area,
         status = EXCLUDED.status,
         read_at = EXCLUDED.read_at,
-        actuality_date = COALESCE(EXCLUDED.actuality_date, taxation_piece.actuality_date)
+        actuality_date = COALESCE(EXCLUDED.actuality_date, taxation_piece.actuality_date),
+        geom = COALESCE(EXCLUDED.geom, taxation_piece.geom),
+        crs = COALESCE(EXCLUDED.crs, taxation_piece.crs)
     """
 )
 
@@ -35,11 +37,11 @@ _UPSERT_QUARTERS = text(
     """
     INSERT INTO quarters (
         subject, fgis_id, subforestry, quarter, tract, status, read_at,
-        actuality_date
+        actuality_date, geom, crs
     )
     VALUES (
         :subject, :fgis_id, :subforestry, :quarter, :tract, :status, :read_at,
-        :actuality_date
+        :actuality_date, ST_GeomFromText(:geom), :crs
     )
     ON CONFLICT (subject, fgis_id) DO UPDATE SET
         subforestry = EXCLUDED.subforestry,
@@ -47,7 +49,9 @@ _UPSERT_QUARTERS = text(
         tract = COALESCE(EXCLUDED.tract, quarters.tract),
         status = EXCLUDED.status,
         read_at = EXCLUDED.read_at,
-        actuality_date = COALESCE(EXCLUDED.actuality_date, quarters.actuality_date)
+        actuality_date = COALESCE(EXCLUDED.actuality_date, quarters.actuality_date),
+        geom = COALESCE(EXCLUDED.geom, quarters.geom),
+        crs = COALESCE(EXCLUDED.crs, quarters.crs)
     """
 )
 
@@ -167,6 +171,8 @@ def upsert_pieces(conn: Connection, rows: Sequence[dict[str, Any]]) -> None:
                 "status": row.get("status"),
                 "read_at": row.get("read_at"),
                 "actuality_date": row.get("actuality_date"),
+                "geom": row.get("geom"),
+                "crs": row.get("crs"),
             }
             for row in rows
         ],
@@ -188,6 +194,8 @@ def upsert_quarters(conn: Connection, rows: Sequence[dict[str, Any]]) -> None:
                 "status": row.get("status"),
                 "read_at": row.get("read_at"),
                 "actuality_date": row.get("actuality_date"),
+                "geom": row.get("geom"),
+                "crs": row.get("crs"),
             }
             for row in rows
         ],

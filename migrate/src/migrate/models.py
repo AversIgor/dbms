@@ -53,6 +53,9 @@ class TaxationPiece(Base):
         Geometry(geometry_type="GEOMETRY", spatial_index=False),
         comment="контур",
     )
+    crs: Mapped[str | None] = mapped_column(
+        String(50), comment="система координат СПД"
+    )
 
 
 class Quarter(Base):
@@ -90,6 +93,9 @@ class Quarter(Base):
     geom: Mapped[object | None] = mapped_column(
         Geometry(geometry_type="GEOMETRY", spatial_index=False),
         comment="контур",
+    )
+    crs: Mapped[str | None] = mapped_column(
+        String(50), comment="система координат СПД"
     )
 
 
