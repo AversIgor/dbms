@@ -36,6 +36,23 @@
 | `semantic_id` | integer | идентификатор семантики (`TAXATION_PIECE.{id}`) |
 | `geom` | geometry | контур |
 
+Таблица **лесосека** (`clearcut`):
+
+| Колонка | Тип | Перевод |
+| --- | --- | --- |
+| `fgis_id` | varchar(50), индекс | учётный номер лесосеки ФГИС ЛК |
+| `subject` | varchar(3), индекс | субъект |
+| `quarter` | varchar(20) | номер квартала |
+| `area` | numeric(16, 5) | площадь |
+| `status` | varchar(10) | status |
+| `read_at` | date | дата чтения из СПД |
+| `actuality_date` | date | дата актуальности (появление в ФГИС ЛК, `modifyDttm` СПД) |
+| `semantic_id` | integer | идентификатор семантики (`CLEARCUT.{id}`) |
+| `geom` | geometry | контур |
+| `limitation_dt` | varchar(20) | дата отвода (`limitationDt` СПД) |
+| `clearcut_no` | varchar(50) | номер лесосеки |
+| `basis_doc_no` | varchar(50) | номер документа-основания |
+
 Таблица **квартал** (`quarters`):
 
 | Колонка | Тип | Перевод |

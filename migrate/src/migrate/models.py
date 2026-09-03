@@ -93,6 +93,50 @@ class Quarter(Base):
     )
 
 
+class Clearcut(Base):
+    """Лесосека: семантика и контур в одной строке."""
+
+    __tablename__ = "clearcut"
+    __table_args__ = (
+        PrimaryKeyConstraint("subject", "fgis_id", name="clearcut_pkey"),
+        Index("ix_clearcut_fgis_id", "fgis_id"),
+        Index("ix_clearcut_subject", "subject"),
+        Index("ix_clearcut_subject_read_at", "subject", "read_at"),
+        Index("ix_clearcut_geom", "geom", postgresql_using="gist"),
+        {"comment": "лесосека"},
+    )
+
+    fgis_id: Mapped[str] = mapped_column(
+        String(50), comment="учётный номер лесосеки ФГИС ЛК"
+    )
+    subject: Mapped[str] = mapped_column(String(3), comment="субъект")
+    quarter: Mapped[str | None] = mapped_column(String(20), comment="номер квартала")
+    area: Mapped[Decimal | None] = mapped_column(Numeric(16, 5), comment="площадь")
+    status: Mapped[str | None] = mapped_column(String(10), comment="status")
+    read_at: Mapped[date | None] = mapped_column(
+        Date, comment="дата чтения из СПД"
+    )
+    actuality_date: Mapped[date | None] = mapped_column(
+        Date, comment="дата актуальности (появление в ФГИС ЛК)"
+    )
+    semantic_id: Mapped[int | None] = mapped_column(
+        Integer, comment="идентификатор семантики WFS (CLEARCUT.{id})"
+    )
+    geom: Mapped[object | None] = mapped_column(
+        Geometry(geometry_type="GEOMETRY", spatial_index=False),
+        comment="контур",
+    )
+    limitation_dt: Mapped[str | None] = mapped_column(
+        String(20), comment="дата отвода"
+    )
+    clearcut_no: Mapped[str | None] = mapped_column(
+        String(50), comment="номер лесосеки"
+    )
+    basis_doc_no: Mapped[str | None] = mapped_column(
+        String(50), comment="номер документа-основания"
+    )
+
+
 class FgisImportHistory(Base):
     """Журнал прогонов импорта fgislk, не снимок слоя."""
 

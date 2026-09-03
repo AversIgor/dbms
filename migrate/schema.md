@@ -1,6 +1,6 @@
 # Схема БД (актуальная)
 
-Источник: `alembic/versions/` + `src/migrate/models.py`. Head: `0008_quarters`.
+Источник: `alembic/versions/` + `src/migrate/models.py`. Head: `0009_clearcut`.
 
 ```mermaid
 erDiagram
@@ -31,6 +31,20 @@ erDiagram
     int semantic_id "идентификатор семантики WFS"
     geometry geom "контур, gist"
   }
+  clearcut {
+    varchar subject PK "субъект, индекс"
+    varchar fgis_id PK "учётный номер лесосеки ФГИС ЛК, индекс"
+    varchar quarter "номер квартала"
+    numeric area "площадь"
+    varchar status "status"
+    date read_at "дата чтения из СПД, индекс с субъектом"
+    date actuality_date "дата актуальности (появление в ФГИС ЛК)"
+    int semantic_id "идентификатор семантики WFS"
+    geometry geom "контур, gist"
+    varchar limitation_dt "дата отвода"
+    varchar clearcut_no "номер лесосеки"
+    varchar basis_doc_no "номер документа-основания"
+  }
   fgis_import_history {
     int id PK
     varchar subject "субъект"
@@ -51,6 +65,7 @@ erDiagram
 | `alembic_version` | текущая revision |
 | `taxation_piece` | выдел: семантика + контур (`0002`) + `read_at` (`0005`) + `actuality_date` (`0006`) + `semantic_id` (`0007`) |
 | `quarters` | квартал: семантика + контур (`0008`) |
+| `clearcut` | лесосека: семантика + контур (`0009`) |
 | `fgis_import_history` | журнал прогонов fgislk (`0003` + окно `0004_fgis_import_period`) |
 | таблицы PostGIS (`spatial_ref_sys` и др.) | ставит расширение, не описывать в `models.py` |
 
