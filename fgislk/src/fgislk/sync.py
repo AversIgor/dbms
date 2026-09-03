@@ -62,6 +62,7 @@ class RunningSet:
         self._lock = asyncio.Lock()
         self._halted = False
         self._generation = 0
+        self._drain: asyncio.Task | None = None
 
     def halted(self) -> bool:
         return self._halted
@@ -89,6 +90,11 @@ class RunningSet:
         tasks = [task for task in list(self._tasks) if not task.done()]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    def schedule_drain(self) -> None:
+        if self._drain is not None and not self._drain.done():
+            return
+        self._drain = asyncio.create_task(self.drain())
 
     async def halt(self) -> list[str]:
         async with self._lock:
@@ -368,13 +374,11 @@ async def _import_window(
         if payloads is None:
             log.warning("пачка карточек субъекта %s недоступна", subject)
             return
-        rows: list[dict[str, Any]] = []
-        for fgis_id, payload in zip(chunk, payloads, strict=True):
-            if not payload:
-                continue
-            row = _ROW_FROM[kind](subject, fgis_id, payload)
-            row["read_at"] = today
-            rows.append(row)
+        if not running.same_gen(gen) or running.halted():
+            raise asyncio.CancelledError
+        rows = await asyncio.to_thread(
+            _rows_from_payloads, kind, subject, chunk, payloads, today
+        )
         async with db_lock:
             if not running.same_gen(gen) or running.halted():
                 raise asyncio.CancelledError
@@ -410,11 +414,28 @@ async def _import_window(
     return upserted
 
 
+def _rows_from_payloads(
+    kind: str,
+    subject: str,
+    chunk: list[str],
+    payloads: list[dict[str, Any] | None],
+    today: date,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for fgis_id, payload in zip(chunk, payloads, strict=True):
+        if not payload:
+            continue
+        row = _ROW_FROM[kind](subject, fgis_id, payload)
+        row["read_at"] = today
+        rows.append(row)
+    return rows
+
+
 async def stop_import(running: RunningSet) -> int:
     codes = await running.halt()
     cancelled = running.cancel_tasks()
     kill_all_curl()
-    await running.drain()
+    running.schedule_drain()
     return max(len(codes), cancelled)
 
 

@@ -148,6 +148,10 @@ def _curl_config_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _parse_curl_stdout(stdout: bytes) -> list[tuple[int, str]]:
+    return parse_curl_responses(stdout.decode("utf-8", errors="replace"))
+
+
 def parse_curl_responses(text: str) -> list[tuple[int, str]]:
     if _STATUS_MARKER not in text:
         return [(0, text)]
@@ -313,8 +317,7 @@ class SpdClient:
                 raise
             finally:
                 _active_curl.discard(proc)
-        text = stdout.decode("utf-8", errors="replace")
-        parsed = parse_curl_responses(text)
+        parsed = await asyncio.to_thread(_parse_curl_stdout, stdout)
         if proc.returncode not in (0, 22) and not any(
             status for status, _ in parsed
         ):
@@ -457,17 +460,9 @@ class SpdClient:
                     ]
                 )
             )
-        out: list[dict[str, Any] | None] = []
-        retry_ids: list[str] = []
-        retry_at: list[int] = []
-        for index, (status, body) in enumerate(parsed):
-            kind, card = _card_from_status(status, body)
-            if kind == "retry":
-                retry_at.append(index)
-                retry_ids.append(ids[index])
-                out.append(None)
-            else:
-                out.append(card)
+        out, retry_ids, retry_at = await asyncio.to_thread(
+            _cards_from_parsed, parsed, ids
+        )
         if retry_ids:
             recovered = await asyncio.gather(
                 *[
@@ -509,6 +504,23 @@ class SpdClient:
                 continue
             return ids_from_payload(data["payload"])
         return []
+
+
+def _cards_from_parsed(
+    parsed: list[tuple[int, str]], ids: list[str]
+) -> tuple[list[dict[str, Any] | None], list[str], list[int]]:
+    out: list[dict[str, Any] | None] = []
+    retry_ids: list[str] = []
+    retry_at: list[int] = []
+    for index, (status, body) in enumerate(parsed):
+        kind, card = _card_from_status(status, body)
+        if kind == "retry":
+            retry_at.append(index)
+            retry_ids.append(ids[index])
+            out.append(None)
+        else:
+            out.append(card)
+    return out, retry_ids, retry_at
 
 
 def _card_from_status(
