@@ -112,11 +112,10 @@ def panel_manifest() -> dict:
                 "id": "clearcut_quarter",
                 "title": "Лесосеки квартала",
                 "method": "GET",
-                "path": "/sync",
-                "query": {"clearcut": "1"},
+                "path": "/updateListCuttingAreaByQuarter",
                 "fields": [
                     {
-                        "name": "quarter",
+                        "name": "fgis_id",
                         "type": "text",
                         "optional": False,
                         "label": "Учётный номер квартала",

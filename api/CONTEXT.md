@@ -6,9 +6,9 @@ Read-only HTTP для внешних ИС: выборки из таблиц Spat
 
 ## Требования
 
-- Только чтение. Alembic не вызывать. Схему не менять.
+- Только чтение PostGIS. Alembic не вызывать. Схему не менять.
 - На старте: `GET {MIGRATE_URL}/ready` и `REQUIRED_SCHEMA`; схема не та — не стартовать.
-- `/health`: версия + `alembic_revision`. `/ready` — 503 при mismatch. `/status` и `GET /panel` — для admin; команд импорта нет. В `/panel` — `methods`: `id`, `title`, `method`, `path`, `fields` (как у команд fgislk).
+- `/health`: версия + `alembic_revision`. `/ready` — 503 при mismatch. `/status` и `GET /panel` — для admin. В `/panel` — `methods`: `id`, `title`, `method`, `path`, `fields` (как у команд fgislk). Импорт в БД не пишет; точечный опрос — `GET /updateListCuttingAreaByQuarter` в `actions` и в `methods`.
 - Геометрию в ответах не отдаём, пока метод явно не потребует контур.
 - Нет логина: доступ как у остальных HTTP на хосте.
 - JSON-ключи колонок латиницей; даты — ISO `YYYY-MM-DD`. Без фильтра по `subject`, если метод его не принимает. Пустой обязательный query — 400 `{ok: false, error}`.
@@ -54,6 +54,9 @@ Read-only HTTP для внешних ИС: выборки из таблиц Spat
 **`GET /getListClearcuts`** (ПолучитьПереченьЛесосек). Query: `quarter_fgis_id`.  
 Выборка: `quarters` по PK, JOIN `clearcut` по связи; пусто — `clearcut WHERE quarter = quarter_fgis_id`.
 
+**`GET /updateListCuttingAreaByQuarter`** (ОбновитьПереченьЛесосекПоКварталу). Query: `fgis_id` — учётный номер квартала. Пустой — 400.  
+Не SELECT: `GET {FGISLK_URL}/updateListCuttingAreaByQuarter?fgis_id=`. Ответ fgislk как есть (202 — внеочередной опрос лесосек этого квартала: без очереди 10 дней и без пропуска по `clearcut_polled_at` / `read_at`; координаты всегда). Субъект уже в прогоне — 409. fgislk недоступен — 503. В `/panel`: команда `actions` и тот же путь в `methods`.
+
 **`GET /getClearcutProps`** (РеквизитыЛесосеки). Query: `fgis_id` лесосеки.  
 Выборка: `clearcut` по PK `fgis_id`; LEFT JOIN LATERAL одна строка `quarters` по связи (предпочтение `quarters.fgis_id = clearcut.quarter`).
 
@@ -67,10 +70,11 @@ Read-only HTTP для внешних ИС: выборки из таблиц Spat
 
 - **Postgres:** те же `POSTGRES_*`; только `SELECT`.
 - **migrate:** `/ready` и `REQUIRED_SCHEMA` перед стартом.
+- **fgislk:** `FGISLK_URL`; только `GET /updateListCuttingAreaByQuarter`.
 - **HTTP** (порт `API_PORT`, по умолчанию 8083): `/health`, `/ready`, `/status`, `GET /panel`, методы выше.
 - **admin:** `/panel`, `/status`; вызов `methods` через прокси. `API_URL`.
 - **Внешние ИС:** HTTP этого раздела; ключ связи — учётный номер ФГИС ЛК (`fgis_id`).
 
 ## Архитектура решения
 
-Внешняя ИС → `GET` метода → `SELECT` из `quarters` / `taxation_piece` / `clearcut`. Методы — модуль-роутер. Модель слоя — [spatialData/CONTEXT.md](../spatialData/CONTEXT.md).
+Внешняя ИС → `GET` метода → `SELECT` из `quarters` / `taxation_piece` / `clearcut`. `updateListCuttingAreaByQuarter` → HTTP fgislk. Методы — модуль-роутер. Модель слоя — [spatialData/CONTEXT.md](../spatialData/CONTEXT.md).

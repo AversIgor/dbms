@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
+import httpx
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
+from api.settings import fgislk_url
 from api.store import (
     clearcut_fgis_id,
     clearcut_props,
@@ -227,6 +229,27 @@ def get_list_clearcuts(request: Request, quarter_fgis_id: str = Query()):
     if isinstance(qid, JSONResponse):
         return qid
     return list_clearcuts(request.app.state.engine, quarter_fgis_id=qid)
+
+
+@router.get("/updateListCuttingAreaByQuarter")
+async def update_list_cutting_area_by_quarter(fgis_id: str | None = Query(default=None)):
+    code = _need("fgis_id", fgis_id)
+    if isinstance(code, JSONResponse):
+        return code
+    url = f"{fgislk_url()}/updateListCuttingAreaByQuarter"
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            response = await http.get(url, params={"fgis_id": code})
+    except httpx.HTTPError as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False, "error": f"fgislk недоступен: {exc}"},
+        )
+    try:
+        body = response.json()
+    except ValueError:
+        body = {"ok": False, "error": "fgislk: не JSON"}
+    return JSONResponse(status_code=response.status_code, content=body)
 
 
 @router.get("/getClearcutProps")

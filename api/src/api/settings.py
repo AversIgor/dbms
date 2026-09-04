@@ -69,6 +69,11 @@ def migrate_url() -> str:
     return os.environ.get("MIGRATE_URL", "http://127.0.0.1:8080").rstrip("/")
 
 
+def fgislk_url() -> str:
+    load_settings()
+    return os.environ.get("FGISLK_URL", "http://127.0.0.1:8081").rstrip("/")
+
+
 def listen_port() -> int:
     load_settings()
     return int(os.environ.get("API_PORT", "8083"))

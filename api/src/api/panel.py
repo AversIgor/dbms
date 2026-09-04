@@ -6,7 +6,21 @@ def panel_manifest() -> dict:
         "id": "api",
         "title": "api",
         "status": {"path": "/status", "label": "API"},
-        "actions": [],
+        "actions": [
+            {
+                "id": "updateListCuttingAreaByQuarter",
+                "title": "Прогон лесосек по кварталу",
+                "method": "GET",
+                "path": "/updateListCuttingAreaByQuarter",
+                "fields": [
+                    {
+                        "name": "fgis_id",
+                        "type": "text",
+                        "label": "Учётный номер квартала",
+                    },
+                ],
+            },
+        ],
         "tables": [],
         "methods": [
             {
@@ -192,6 +206,19 @@ def panel_manifest() -> dict:
                 "fields": [
                     {
                         "name": "quarter_fgis_id",
+                        "type": "text",
+                        "label": "Учётный номер квартала",
+                    },
+                ],
+            },
+            {
+                "id": "updateListCuttingAreaByQuarter",
+                "title": "Обновить перечень лесосек по кварталу",
+                "method": "GET",
+                "path": "/updateListCuttingAreaByQuarter",
+                "fields": [
+                    {
+                        "name": "fgis_id",
                         "type": "text",
                         "label": "Учётный номер квартала",
                     },

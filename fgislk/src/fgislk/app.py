@@ -90,6 +90,70 @@ def _running_of() -> RunningSet:
     return running
 
 
+async def _start_point_poll(
+    quarter_id: str, subject: str | None = None
+) -> JSONResponse:
+    try:
+        derived = subject_from_quarter_id(quarter_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    if subject is not None and subject.strip() != "":
+        try:
+            given = parse_subjects(subject)
+        except ValueError as exc:
+            return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+        if len(given) != 1 or given[0] != derived:
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "error": "subject= не совпадает с номером квартала"},
+            )
+    if not quarter_exists(app.state.engine, derived, quarter_id):
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "квартал не найден в quarters"},
+        )
+    running: RunningSet = _running_of()
+    live = await running.codes()
+    if derived in live:
+        return JSONResponse(
+            status_code=409,
+            content={"ok": False, "error": f"импорт субъекта {derived} уже идёт"},
+        )
+    if not await running.inflight():
+        running.reset()
+    started = {
+        "ok": True,
+        "audit": False,
+        "day": None,
+        "subjects": [derived],
+        "kinds": [KIND_CLEARCUT],
+        "area": True,
+        "quarter": quarter_id,
+    }
+    engine = app.state.engine
+
+    async def job() -> None:
+        spd = SpdClient()
+        try:
+            await run_subjects(
+                engine=engine,
+                spd=spd,
+                running=running,
+                subjects=[derived],
+                audit=False,
+                require_lock=True,
+                audit_from=None,
+                kinds=[KIND_CLEARCUT],
+                need_area=True,
+                quarter_id=quarter_id,
+            )
+        finally:
+            await spd.aclose()
+
+    running.track(asyncio.create_task(job()))
+    return JSONResponse(status_code=202, content=started)
+
+
 @app.get("/health")
 def health() -> dict:
     engine = app.state.engine
@@ -307,38 +371,14 @@ async def sync(
                 },
             )
     if want_point:
-        kinds = [KIND_CLEARCUT]
+        assert quarter_id is not None
+        return await _start_point_poll(quarter_id, subject)
 
-    need_area = True if want_start or want_point else _truthy(area)
+    need_area = True if want_start else _truthy(area)
 
     codes: list[str] | None
     require_lock: bool
-    if want_point:
-        assert quarter_id is not None
-        try:
-            derived = subject_from_quarter_id(quarter_id)
-        except ValueError as exc:
-            return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
-        if subject is not None and subject.strip() != "":
-            try:
-                given = parse_subjects(subject)
-            except ValueError as exc:
-                return JSONResponse(
-                    status_code=400, content={"ok": False, "error": str(exc)}
-                )
-            if len(given) != 1 or given[0] != derived:
-                return JSONResponse(
-                    status_code=400,
-                    content={"ok": False, "error": "subject= не совпадает с номером квартала"},
-                )
-        codes = [derived]
-        require_lock = True
-        if not quarter_exists(app.state.engine, derived, quarter_id):
-            return JSONResponse(
-                status_code=400,
-                content={"ok": False, "error": "квартал не найден в quarters"},
-            )
-    elif subject is None or subject.strip() == "":
+    if subject is None or subject.strip() == "":
         codes = None
         require_lock = False
     else:
@@ -373,7 +413,6 @@ async def sync(
         "subjects": codes if codes is not None else "01-99",
         "kinds": kinds if kinds is not None else list(IMPORT_ORDER),
         "area": need_area,
-        "quarter": quarter_id,
     }
     if want_start and codes is None:
         kick: asyncio.Event = app.state.kick
@@ -395,10 +434,24 @@ async def sync(
                 audit_from=audit_from,
                 kinds=kinds,
                 need_area=need_area,
-                quarter_id=quarter_id if want_point else None,
             )
         finally:
             await spd.aclose()
 
     running.track(asyncio.create_task(job()))
     return JSONResponse(status_code=202, content=started)
+
+
+@app.get("/updateListCuttingAreaByQuarter")
+async def update_list_cutting_area_by_quarter(
+    fgis_id: str | None = Query(default=None),
+    quarter: str | None = Query(default=None),
+    subject: str | None = Query(default=None),
+):
+    quarter_id = (fgis_id or "").strip() or (quarter or "").strip()
+    if not quarter_id:
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "нужен fgis_id"},
+        )
+    return await _start_point_poll(quarter_id, subject)
