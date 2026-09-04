@@ -8,6 +8,9 @@ if (-not $env:MIGRATE_URL) {
 if (-not $env:FGISLK_URL) {
     $env:FGISLK_URL = "http://127.0.0.1:8081"
 }
+if (-not $env:API_URL) {
+    $env:API_URL = "http://127.0.0.1:8083"
+}
 
 python -m pip install -q -e .\admin
 python -m admin serve

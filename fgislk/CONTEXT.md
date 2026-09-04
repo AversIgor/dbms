@@ -47,4 +47,4 @@
 
 ## Архитектура решения
 
-ИС ФГИС ЛК → fgislk (`FGIS_TLS`) → `quarters` / `taxation_piece` / `clearcut` + `fgis_import_history`. Модель слоя — [spatialData/CONTEXT.md](../spatialData/CONTEXT.md). Цикл после полуночи МСК и на старте; вручную: `start=1` / `audit=1` / `clearcut=1&quarter=` / `stop=1`. Advisory lock на субъект в Postgres (`fgislk:{subject}`).
+ИС ФГИС ЛК → fgislk (`FGIS_TLS`) → `quarters` / `taxation_piece` / `clearcut` + `fgis_import_history`. Модель слоя — [spatialData/CONTEXT.md](../spatialData/CONTEXT.md). Цикл после полуночи МСК и на старте; вручную: `start=1` / `audit=1` / `clearcut=1&quarter=` / `stop=1`. Advisory lock на субъект в Postgres (`fgislk:{subject}`) — отдельное соединение с ping; запись семантики из пула (`pool_pre_ping`), не через lock-сокет.

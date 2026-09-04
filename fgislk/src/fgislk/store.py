@@ -106,6 +106,12 @@ def make_engine() -> Engine:
         pool_pre_ping=True,
         pool_size=workers + 2,
         max_overflow=4,
+        connect_args={
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 3,
+        },
     )
 
 
@@ -181,6 +187,11 @@ def unlock_subject(conn: Connection, subject: str) -> None:
         text("SELECT pg_advisory_unlock(hashtext(:key))"),
         {"key": f"fgislk:{subject}"},
     )
+    conn.commit()
+
+
+def ping_lock(conn: Connection) -> None:
+    conn.execute(text("SELECT 1"))
     conn.commit()
 
 

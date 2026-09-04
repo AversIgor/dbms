@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from admin.settings import fgislk_url, migrate_url
+from admin.settings import api_url, fgislk_url, migrate_url
 
 SPATIAL_STUB = (
     "Нет HTTP-процесса; данные в PostGIS через migrate и fgislk."
@@ -18,6 +18,11 @@ def catalog() -> list[dict]:
             "id": "fgislk",
             "title": "fgislk",
             "base_url": fgislk_url(),
+        },
+        {
+            "id": "api",
+            "title": "api",
+            "base_url": api_url(),
         },
         {
             "id": "spatialData",

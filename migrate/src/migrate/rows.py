@@ -14,7 +14,6 @@ from migrate.models import Base
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 100
 MAX_DELETE_IDS = 500
-MAX_DELETE_MATCHING = 10_000
 
 
 def _mappers() -> dict[str, Any]:
@@ -174,23 +173,11 @@ def delete_rows(
     try:
         with eng.begin() as conn:
             if all_matching:
-                if not (q or "").strip():
-                    raise HTTPException(
-                        status_code=400,
-                        detail="удаление найденных — только с непустым поиском",
-                    )
                 where = _filter(mapper, field, q)
-                total = int(
-                    conn.execute(
-                        select(func.count()).select_from(model).where(where)
-                    ).scalar_one()
-                )
-                if total > MAX_DELETE_MATCHING:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"слишком много строк ({total}), лимит {MAX_DELETE_MATCHING}",
-                    )
-                result = conn.execute(delete(model).where(where))
+                stmt = delete(model)
+                if where is not None:
+                    stmt = stmt.where(where)
+                result = conn.execute(stmt)
                 deleted = result.rowcount or 0
             else:
                 if not ids:

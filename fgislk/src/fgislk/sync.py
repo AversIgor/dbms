@@ -24,6 +24,7 @@ from fgislk.settings import (
 from fgislk.spd import SpdClient, SpdError, kill_all_curl
 from fgislk.store import (
     last_ok_day,
+    ping_lock,
     quarters_for_clearcut,
     recent_read_ids,
     recent_read_ids_subject,
@@ -49,6 +50,7 @@ from fgislk.windows import (
 log = logging.getLogger(__name__)
 
 FLUSH_BATCH = 100
+_LOCK_PING_SEC = 20.0
 
 _ROW_FROM = {
     KIND_QUARTERS: quarter_row_from_payload,
@@ -160,6 +162,17 @@ class RunningSet:
             ]
 
 
+async def _hold_advisory(conn, subject: str) -> None:
+    try:
+        while True:
+            await asyncio.sleep(_LOCK_PING_SEC)
+            ping_lock(conn)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("потеряли lock-соединение субъекта %s", subject)
+
+
 async def run_subject(
     *,
     engine: Engine,
@@ -173,13 +186,15 @@ async def run_subject(
     need_area: bool = True,
     quarter_id: str | None = None,
 ) -> str:
-    conn = engine.connect()
+    lock_conn = engine.connect()
     gen: int | None = None
+    ping: asyncio.Task | None = None
     try:
-        if not try_lock_subject(conn, subject):
+        if not try_lock_subject(lock_conn, subject):
             if require_lock:
                 raise AlreadyRunning(subject)
             return "busy"
+        ping = asyncio.create_task(_hold_advisory(lock_conn, subject))
         try:
             today = moscow_today()
             history_day = yesterday(today)
@@ -205,9 +220,9 @@ async def run_subject(
                     if audit:
                         window = audit_window(today, start=audit_from)
                     else:
-                        window = incremental_window(
-                            last_ok_day(conn, subject, kind), today
-                        )
+                        with engine.connect() as conn:
+                            watermark = last_ok_day(conn, subject, kind)
+                        window = incremental_window(watermark, today)
                     start, end = window
                     period_start, period_end = start, end
                     await running.update(
@@ -220,7 +235,7 @@ async def run_subject(
                     )
                     if kind == KIND_CLEARCUT:
                         updated = await _import_clearcuts(
-                            conn,
+                            engine,
                             spd,
                             subject,
                             start,
@@ -241,7 +256,7 @@ async def run_subject(
                         )
                     else:
                         updated = await _import_window(
-                            conn,
+                            engine,
                             spd,
                             subject,
                             start,
@@ -263,28 +278,21 @@ async def run_subject(
                         )
                     if not running.same_gen(gen) or running.halted():
                         return "stopped"
-                    write_history(
-                        conn,
-                        subject=subject,
-                        day=history_day,
-                        result="ok",
-                        updated_count=updated,
-                        error=None,
-                        data_kind=kind,
-                        period_start=start,
-                        period_end=end,
-                    )
+                    with engine.connect() as conn:
+                        write_history(
+                            conn,
+                            subject=subject,
+                            day=history_day,
+                            result="ok",
+                            updated_count=updated,
+                            error=None,
+                            data_kind=kind,
+                            period_start=start,
+                            period_end=end,
+                        )
                 except asyncio.CancelledError:
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
                     raise
                 except Exception as exc:
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
                     if gen is not None and (
                         not running.same_gen(gen) or running.halted()
                     ):
@@ -296,17 +304,18 @@ async def run_subject(
                                 if job["subject"] == subject:
                                     n = int(job.get("updated_count") or 0)
                                     break
-                        write_history(
-                            conn,
-                            subject=subject,
-                            day=yesterday(),
-                            result="error",
-                            updated_count=n,
-                            error=str(exc)[:2000],
-                            data_kind=kind,
-                            period_start=period_start,
-                            period_end=period_end,
-                        )
+                        with engine.connect() as conn:
+                            write_history(
+                                conn,
+                                subject=subject,
+                                day=yesterday(),
+                                result="error",
+                                updated_count=n,
+                                error=str(exc)[:2000],
+                                data_kind=kind,
+                                period_start=period_start,
+                                period_end=period_end,
+                            )
                     except Exception:
                         log.exception(
                             "не записали историю ошибки субъекта %s %s",
@@ -321,18 +330,21 @@ async def run_subject(
                 raise last_error
             return last_result
         finally:
+            if ping is not None:
+                ping.cancel()
+                await asyncio.gather(ping, return_exceptions=True)
             try:
-                unlock_subject(conn, subject)
+                unlock_subject(lock_conn, subject)
             except Exception:
                 log.exception("не сняли lock субъекта %s", subject)
     finally:
-        conn.close()
+        lock_conn.close()
         if gen is not None:
             await running.release(subject, gen)
 
 
 async def _import_clearcuts(
-    conn,
+    engine: Engine,
     spd: SpdClient,
     subject: str,
     start: date,
@@ -350,19 +362,26 @@ async def _import_clearcuts(
 ) -> int:
     if not running.same_gen(gen) or running.halted():
         raise asyncio.CancelledError
-    queue = quarters_for_clearcut(
-        conn,
-        subject,
-        audit=audit,
-        period_start=start,
-        quarter_id=quarter_id,
-        full_scan=(
-            not audit
-            and not quarter_id
-            and clearcut_full_scan(subject, read_at)
-        ),
-        today=None if quarter_id else read_at,
-    )
+    with engine.connect() as conn:
+        queue = quarters_for_clearcut(
+            conn,
+            subject,
+            audit=audit,
+            period_start=start,
+            quarter_id=quarter_id,
+            full_scan=(
+                not audit
+                and not quarter_id
+                and clearcut_full_scan(subject, read_at)
+            ),
+            today=None if quarter_id else read_at,
+        )
+        since = fresh_since or audit_read_since(read_at)
+        fresh: set[str] = set()
+        if skip_fresh:
+            fresh = recent_read_ids_subject(
+                conn, subject, since, data_kind=KIND_CLEARCUT
+            )
     total = len(queue)
     upserted = 0
     processed = 0
@@ -370,12 +389,6 @@ async def _import_clearcuts(
         subject, updated_count=0, changed_total=total, progress_count=0
     )
     db_lock = asyncio.Lock()
-    since = fresh_since or audit_read_since(read_at)
-    fresh: set[str] = set()
-    if skip_fresh:
-        fresh = recent_read_ids_subject(
-            conn, subject, since, data_kind=KIND_CLEARCUT
-        )
     cursor = 0
     cursor_lock = asyncio.Lock()
     n_chunks = (total + FLUSH_BATCH - 1) // FLUSH_BATCH if total else 0
@@ -394,17 +407,18 @@ async def _import_clearcuts(
             and n_quarters
             and processed // FLUSH_BATCH > prev // FLUSH_BATCH
         ):
-            write_history(
-                conn,
-                subject=subject,
-                day=history_day,
-                result="partial",
-                updated_count=upserted,
-                error=None,
-                data_kind=KIND_CLEARCUT,
-                period_start=start,
-                period_end=end,
-            )
+            with engine.connect() as conn:
+                write_history(
+                    conn,
+                    subject=subject,
+                    day=history_day,
+                    result="partial",
+                    updated_count=upserted,
+                    error=None,
+                    data_kind=KIND_CLEARCUT,
+                    period_start=start,
+                    period_end=end,
+                )
 
     async def fetch_quarter_cards(qid: str, ids: list[str]) -> int | None:
         to_fetch = ids
@@ -454,11 +468,12 @@ async def _import_clearcuts(
             async with db_lock:
                 if not running.same_gen(gen) or running.halted():
                     raise asyncio.CancelledError
-                if rows:
-                    upsert_clearcuts(conn, rows)
-                    fetched.extend(row["fgis_id"] for row in rows)
-                n += len(rows)
-                conn.commit()
+                with engine.connect() as conn:
+                    if rows:
+                        upsert_clearcuts(conn, rows)
+                        fetched.extend(row["fgis_id"] for row in rows)
+                    n += len(rows)
+                    conn.commit()
         if missing:
             log.warning("квартал %s: не все карточки лесосек", qid)
             return None
@@ -488,14 +503,15 @@ async def _import_clearcuts(
             async with db_lock:
                 if not running.same_gen(gen) or running.halted():
                     raise asyncio.CancelledError
-                stamp_clearcut_polls(
-                    conn,
-                    subject,
-                    empty,
-                    polled_at=read_at,
-                    has_clearcuts=False,
-                )
-                conn.commit()
+                with engine.connect() as conn:
+                    stamp_clearcut_polls(
+                        conn,
+                        subject,
+                        empty,
+                        polled_at=read_at,
+                        has_clearcuts=False,
+                    )
+                    conn.commit()
                 await mark_progress(0, len(empty))
         for qid, ids in filled:
             n = await fetch_quarter_cards(qid, ids)
@@ -508,14 +524,15 @@ async def _import_clearcuts(
             async with db_lock:
                 if not running.same_gen(gen) or running.halted():
                     raise asyncio.CancelledError
-                stamp_clearcut_poll(
-                    conn,
-                    subject,
-                    qid,
-                    polled_at=read_at,
-                    has_clearcuts=True,
-                )
-                conn.commit()
+                with engine.connect() as conn:
+                    stamp_clearcut_poll(
+                        conn,
+                        subject,
+                        qid,
+                        polled_at=read_at,
+                        has_clearcuts=True,
+                    )
+                    conn.commit()
                 await mark_progress(n, 1)
 
     async def worker() -> None:
@@ -538,7 +555,7 @@ async def _import_clearcuts(
 
 
 async def _import_window(
-    conn,
+    engine: Engine,
     spd: SpdClient,
     subject: str,
     start: date,
@@ -581,7 +598,8 @@ async def _import_window(
     skipped = 0
     if skip_fresh:
         since = fresh_since or audit_read_since(today)
-        fresh = recent_read_ids(conn, subject, since, ids, data_kind=kind)
+        with engine.connect() as conn:
+            fresh = recent_read_ids(conn, subject, since, ids, data_kind=kind)
         to_fetch = [fgis_id for fgis_id in ids if fgis_id not in fresh]
         skipped = len(ids) - len(to_fetch)
         if skipped:
@@ -626,23 +644,24 @@ async def _import_window(
         async with db_lock:
             if not running.same_gen(gen) or running.halted():
                 raise asyncio.CancelledError
-            if rows:
-                _UPSERT[kind](conn, rows)
-                upserted += len(rows)
-            conn.commit()
-            await running.update(subject, updated_count=upserted)
-            if commit_every is not None and history_day is not None:
-                write_history(
-                    conn,
-                    subject=subject,
-                    day=history_day,
-                    result="partial",
-                    updated_count=upserted,
-                    error=None,
-                    data_kind=kind,
-                    period_start=start,
-                    period_end=end,
-                )
+            with engine.connect() as conn:
+                if rows:
+                    _UPSERT[kind](conn, rows)
+                    upserted += len(rows)
+                conn.commit()
+                await running.update(subject, updated_count=upserted)
+                if commit_every is not None and history_day is not None:
+                    write_history(
+                        conn,
+                        subject=subject,
+                        day=history_day,
+                        result="partial",
+                        updated_count=upserted,
+                        error=None,
+                        data_kind=kind,
+                        period_start=start,
+                        period_end=end,
+                    )
 
     async def one(offset: int) -> None:
         async with inner:

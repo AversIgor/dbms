@@ -54,12 +54,15 @@ services:
       ADMIN_PORT: "8082"
       MIGRATE_URL: http://migrate:8080
       FGISLK_URL: ${FGISLK_URL:-http://host.docker.internal:8081}
+      API_URL: ${API_URL:-http://api:8083}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "${ADMIN_PORT:-8082}:8082"
     depends_on:
       migrate:
+        condition: service_healthy
+      api:
         condition: service_healthy
     healthcheck:
       test:
@@ -73,6 +76,33 @@ services:
       timeout: 5s
       retries: 8
       start_period: 15s
+    restart: unless-stopped
+
+  api:
+    build: ./api
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      MIGRATE_URL: http://migrate:8080
+      API_PORT: "8083"
+    ports:
+      - "${API_PORT:-8083}:8083"
+    depends_on:
+      migrate:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8083/ready')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
     restart: unless-stopped
 
   fgislk:

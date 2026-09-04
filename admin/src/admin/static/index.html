@@ -159,7 +159,21 @@
       background: var(--card);
       color: var(--ink);
     }
-    dialog.browser::backdrop { background: rgba(40, 40, 40, 0.35); }
+    dialog.browser::backdrop, dialog.result::backdrop { background: rgba(40, 40, 40, 0.35); }
+    dialog.result {
+      width: min(96vw, 76rem);
+      max-height: 92vh;
+      border: 1px solid #7a7a7a;
+      padding: 0;
+      background: var(--card);
+      color: var(--ink);
+    }
+    dialog.result .result-body {
+      overflow: auto;
+      max-height: 72vh;
+      padding: 8px;
+    }
+    dialog.result pre { margin: 0; max-height: none; }
     .browser-head {
       display: flex;
       justify-content: space-between;
@@ -316,6 +330,7 @@
         <div class="card-body">
           <div class="status muted">загрузка</div>
           <div class="actions block"></div>
+          <div class="methods block"></div>
           <div class="tables block"></div>
         </div>`;
       return el;
@@ -420,6 +435,62 @@
       } else {
         box.innerHTML = `<pre>${esc(JSON.stringify(res.data, null, 2))}</pre>`;
       }
+    }
+
+    function resultPayloadHtml(data) {
+      if (Array.isArray(data)) {
+        return tableHtml(data);
+      }
+      if (data && typeof data === "object" && Array.isArray(data.rows)) {
+        return tableHtml(data.rows);
+      }
+      return `<pre>${esc(JSON.stringify(data, null, 2))}</pre>`;
+    }
+
+    function mountMethods(card, sectionId, panel) {
+      const wrap = card.querySelector(".methods");
+      if (!panel.methods || !panel.methods.length) {
+        wrap.innerHTML = "";
+        return;
+      }
+      wrap.innerHTML = `<h3>Методы</h3>`;
+      panel.methods.forEach((spec) => {
+        const method = (spec.method || "GET").toUpperCase();
+        const path = spec.path || "";
+        const form = document.createElement("form");
+        form.className = "row";
+        form.innerHTML =
+          `<span class="muted">${esc(method)} ${esc(path)}</span>` +
+          (spec.fields || []).map(fieldInput).join("") +
+          `<button type="submit">${esc(spec.title || "Вызвать")}</button>
+           <span class="muted result"></span>`;
+        const dlg = document.createElement("dialog");
+        dlg.className = "result";
+        dlg.innerHTML = `<div class="browser-head">
+            <h3></h3>
+            <button type="button" class="close-result">Закрыть</button>
+          </div>
+          <div class="result-body"></div>`;
+        dlg.querySelector(".close-result").addEventListener("click", () => dlg.close());
+        form.addEventListener("submit", async (ev) => {
+          ev.preventDefault();
+          const result = form.querySelector(".result");
+          const rel = buildQuery(spec, form);
+          result.textContent = "…";
+          const res = await fetchJson(`/p/${sectionId}${rel}`, { method });
+          if (res.ok) {
+            result.textContent = `ok ${res.status}`;
+          } else {
+            result.textContent = errorText(res);
+          }
+          dlg.querySelector("h3").textContent =
+            `${method} ${rel} — ${res.status}`;
+          dlg.querySelector(".result-body").innerHTML = resultPayloadHtml(res.data);
+          dlg.showModal();
+        });
+        wrap.appendChild(form);
+        wrap.appendChild(dlg);
+      });
     }
 
     function mountActions(card, sectionId, panel) {
@@ -537,8 +608,7 @@
         dlg.querySelector(".page-info").textContent = state.loaded
           ? `${page} / ${state.pages}, всего ${state.total}`
           : "";
-        const q = String(form.elements[qParam].value || "").trim();
-        dlg.querySelector(".del-matching").disabled = !state.loaded || !q || !state.total;
+        dlg.querySelector(".del-matching").disabled = !state.loaded || !state.total;
         dlg.querySelector(".del-selected").disabled = true;
       }
 
@@ -647,8 +717,11 @@
       });
       dlg.querySelector(".del-matching").addEventListener("click", () => {
         const q = String(form.elements[qParam].value || "").trim();
-        if (!q || !state.total) return;
-        if (!window.confirm(`Удалить все найденные записи (${state.total})?`)) return;
+        if (!state.total) return;
+        const warn = q
+          ? `Удалить все найденные записи (${state.total})?`
+          : `Очистить всю таблицу «${form.elements[tableParam].value}» (${state.total} строк)? Это нельзя отменить.`;
+        if (!window.confirm(warn)) return;
         sendDelete({
           table: form.elements[tableParam].value,
           field: form.elements[fieldParam].value,
@@ -728,6 +801,7 @@
         }
         const panel = panelRes.data;
         mountActions(card, section.id, panel);
+        mountMethods(card, section.id, panel);
         mountStatus(card, section.id, panel);
         mountTables(card, section.id, panel);
         await refreshStatus(card, section.id, panel);
