@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 
-REQUIRED_SCHEMA = "0002_constant"
+REQUIRED_SCHEMA = "0003_api_indexes"
 
 _DB_KEYS = (
     "POSTGRES_USER",

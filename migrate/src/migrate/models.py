@@ -57,6 +57,11 @@ class TaxationPiece(Base):
         PrimaryKeyConstraint("fgis_id", name="taxation_piece_pkey"),
         Index("ix_taxation_piece_subject", "subject"),
         Index("ix_taxation_piece_subject_read_at", "subject", "read_at"),
+        Index(
+            "ix_taxation_piece_quarter_piece",
+            "quarter",
+            "taxation_piece",
+        ),
         Index("ix_taxation_piece_geom", "geom", postgresql_using="gist"),
         {"comment": "выдел"},
     )
@@ -102,6 +107,7 @@ class Quarter(Base):
             "subject",
             "clearcut_polled_at",
         ),
+        Index("ix_quarters_subforestry_quarter", "subforestry", "quarter"),
         Index("ix_quarters_geom", "geom", postgresql_using="gist"),
         {"comment": "квартал"},
     )
@@ -148,6 +154,7 @@ class Clearcut(Base):
         PrimaryKeyConstraint("fgis_id", name="clearcut_pkey"),
         Index("ix_clearcut_subject", "subject"),
         Index("ix_clearcut_subject_read_at", "subject", "read_at"),
+        Index("ix_clearcut_quarter_no_area", "quarter", "clearcut_no", "area"),
         Index("ix_clearcut_geom", "geom", postgresql_using="gist"),
         {"comment": "лесосека"},
     )

@@ -19,7 +19,7 @@ def main() -> None:
 @click.option("--host", default="0.0.0.0", show_default=True)
 @click.option("--port", type=int, default=None)
 def serve(host: str, port: int | None) -> None:
-    """HTTP: /health /ready /panel /status /getListQuarters."""
+    """HTTP: /health /ready /panel /status и методы выдачи."""
     logging.basicConfig(level=logging.INFO)
     if port is None:
         port = listen_port()

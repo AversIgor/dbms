@@ -239,6 +239,21 @@
         .replace(/"/g, "&quot;");
     }
 
+    function optionValue(opt) {
+      return typeof opt === "object" && opt != null ? opt.value : opt;
+    }
+
+    function optionLabel(opt) {
+      if (typeof opt === "object" && opt != null) return opt.label != null ? opt.label : opt.value;
+      return opt;
+    }
+
+    function optionHtml(opt, selected) {
+      const v = optionValue(opt);
+      const sel = String(selected ?? "") === String(v ?? "") ? "selected" : "";
+      return `<option value="${esc(v)}" ${sel}>${esc(optionLabel(opt))}</option>`;
+    }
+
     function fieldInput(field) {
       const name = esc(field.name);
       const req = field.optional ? "" : "required";
@@ -248,12 +263,7 @@
         return `<label class="check"><input name="${name}" type="checkbox" value="${v}" ${checked}> ${esc(field.label || field.name)}</label>`;
       }
       if (field.type === "select") {
-        const opts = (field.options || []).map((opt) => {
-          const v = typeof opt === "object" ? opt.value : opt;
-          const lab = typeof opt === "object" ? (opt.label || v) : opt;
-          const sel = String(field.value ?? "") === String(v) ? "selected" : "";
-          return `<option value="${esc(v)}" ${sel}>${esc(lab)}</option>`;
-        }).join("");
+        const opts = (field.options || []).map((opt) => optionHtml(opt, field.value)).join("");
         return `<label>${esc(field.label || field.name)}<select name="${name}" ${req}>${opts}</select></label>`;
       }
       const type = field.type === "date" ? "date" : field.type === "int" ? "number" : "text";
@@ -442,12 +452,73 @@
 
     function resultPayloadHtml(data) {
       if (Array.isArray(data)) {
-        return tableHtml(data);
+        if (!data.length) return tableHtml(data);
+        if (data.every((row) => row && typeof row === "object" && !Array.isArray(row))) {
+          return tableHtml(data);
+        }
+        return `<pre>${esc(JSON.stringify(data, null, 2))}</pre>`;
       }
       if (data && typeof data === "object" && Array.isArray(data.rows)) {
         return tableHtml(data.rows);
       }
       return `<pre>${esc(JSON.stringify(data, null, 2))}</pre>`;
+    }
+
+    function bindOptionsFrom(form, spec, sectionId, methods) {
+      (spec.fields || []).forEach((field) => {
+        const src = field.options_from;
+        if (!src || !src.method) return;
+        const method = (methods || []).find((item) => item.id === src.method);
+        if (!method || !method.path) return;
+        const select = form.elements[field.name];
+        if (!select || select.tagName !== "SELECT") return;
+        const deps = src.query || {};
+        const valueKey = src.value || "value";
+        async function reload() {
+          const params = new URLSearchParams();
+          let ready = true;
+          Object.keys(deps).forEach((q) => {
+            const el = form.elements[deps[q]];
+            const v = el ? String(el.value || "").trim() : "";
+            if (!v) ready = false;
+            else params.set(q, v);
+          });
+          const seen = new Set();
+          const opts = [];
+          function add(opt) {
+            const v = String(optionValue(opt) ?? "");
+            if (seen.has(v)) return;
+            seen.add(v);
+            opts.push(typeof opt === "object" && opt != null ? opt : { value: opt, label: opt });
+          }
+          (field.options || []).forEach(add);
+          if (ready) {
+            const qs = params.toString();
+            const rel = qs ? `${method.path}?${qs}` : method.path;
+            const res = await fetchJson(`/p/${sectionId}${rel}`, {
+              method: (method.method || "GET").toUpperCase(),
+            });
+            if (res.ok && Array.isArray(res.data)) {
+              res.data.forEach((row) => {
+                if (row && typeof row === "object" && !Array.isArray(row)) {
+                  const v = row[valueKey];
+                  if (v == null || v === "") return;
+                  add({ value: String(v), label: String(v) });
+                } else if (row != null && row !== "") {
+                  add({ value: String(row), label: String(row) });
+                }
+              });
+            }
+          }
+          const keep = select.value || field.value || "";
+          select.innerHTML = opts.map((opt) => optionHtml(opt, keep)).join("");
+        }
+        Object.keys(deps).forEach((q) => {
+          const el = form.elements[deps[q]];
+          if (el) el.addEventListener("change", reload);
+        });
+        reload();
+      });
     }
 
     function mountMethods(card, sectionId, panel) {
@@ -486,11 +557,11 @@
           } else {
             result.textContent = errorText(res);
           }
-          dlg.querySelector("h3").textContent =
-            `${method} ${rel} — ${res.status}`;
+          dlg.querySelector("h3").textContent = spec.title || "";
           dlg.querySelector(".result-body").innerHTML = resultPayloadHtml(res.data);
           dlg.showModal();
         });
+        bindOptionsFrom(form, spec, sectionId, panel.methods);
         wrap.appendChild(form);
         wrap.appendChild(dlg);
       });

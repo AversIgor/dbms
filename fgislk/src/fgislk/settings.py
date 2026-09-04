@@ -8,7 +8,7 @@ from urllib.parse import quote
 import httpx
 from dotenv import load_dotenv
 
-REQUIRED_SCHEMA = "0002_constant"
+REQUIRED_SCHEMA = "0003_api_indexes"
 KIND_QUARTERS = "quarters"
 KIND_TAXATION_PIECE = "taxation_piece"
 KIND_CLEARCUT = "clearcut"

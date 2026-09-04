@@ -1,6 +1,6 @@
 # Схема БД (актуальная)
 
-Источник: `alembic/versions/` + `src/migrate/models.py`. Head: `0002_constant`.
+Источник: `alembic/versions/` + `src/migrate/models.py`. Head: `0003_api_indexes`.
 
 ```mermaid
 erDiagram
@@ -11,7 +11,7 @@ erDiagram
     varchar fgis_id PK "учётный номер выдела ФГИС ЛК, уникален"
     varchar subject "субъект, индекс"
     varchar taxation_piece "номер выдела"
-    varchar quarter "номер квартала"
+    varchar quarter "номер квартала (часто учётный номер квартала), индекс с taxation_piece"
     numeric area "площадь"
     varchar status "status"
     date read_at "дата чтения из СПД, индекс с субъектом"
@@ -23,7 +23,7 @@ erDiagram
   quarters {
     varchar fgis_id PK "учётный номер квартала ФГИС ЛК, уникален"
     varchar subject "субъект, индекс"
-    varchar subforestry "участковое лесничество"
+    varchar subforestry "участковое лесничество, индекс с quarter"
     varchar quarter "номер квартала"
     varchar tract "урочище"
     varchar status "status"
@@ -38,7 +38,7 @@ erDiagram
   clearcut {
     varchar fgis_id PK "учётный номер лесосеки ФГИС ЛК, уникален"
     varchar subject "субъект, индекс"
-    varchar quarter "номер квартала"
+    varchar quarter "номер квартала (часто учётный номер квартала), индекс с clearcut_no и area"
     numeric area "площадь"
     varchar status "status"
     date read_at "дата чтения из СПД, индекс с субъектом"
@@ -74,9 +74,9 @@ erDiagram
 | --- | --- |
 | extension `postgis` | геометрия |
 | `alembic_version` | текущая revision |
-| `taxation_piece` | выдел: семантика + контур, PK `fgis_id` |
-| `quarters` | квартал: семантика + контур, опрос лесосек, PK `fgis_id` |
-| `clearcut` | лесосека: семантика + контур, `limitation_dt` date, PK `fgis_id` |
+| `taxation_piece` | выдел: семантика + контур, PK `fgis_id`; btree `(quarter, taxation_piece)` |
+| `quarters` | квартал: семантика + контур, опрос лесосек, PK `fgis_id`; btree `(subforestry, quarter)` |
+| `clearcut` | лесосека: семантика + контур, `limitation_dt` date, PK `fgis_id`; btree `(quarter, clearcut_no, area)` |
 | `fgis_import_history` | журнал прогонов fgislk |
 | `constant` | прикладные настройки; HTTP — раздел `constants` |
 | таблицы PostGIS (`spatial_ref_sys` и др.) | ставит расширение, не описывать в `models.py` |
