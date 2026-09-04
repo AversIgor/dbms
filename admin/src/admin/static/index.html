@@ -760,19 +760,36 @@
         const spec = table.delete || {};
         const path = spec.path || `${table.path}/delete`;
         const method = (spec.method || "POST").toUpperCase();
+        const matching = Boolean(payload.all_matching);
+        let totalDeleted = 0;
+        shell.querySelector(".del-matching").disabled = true;
+        shell.querySelector(".del-selected").disabled = true;
         result.textContent = "…";
-        const res = await fetchJson(`/p/${sectionId}${path}`, {
-          method,
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) {
-          result.textContent = errorText(res);
-          return;
+        try {
+          while (true) {
+            if (matching && totalDeleted) {
+              result.textContent = `удаление… ${totalDeleted}`;
+            }
+            const res = await fetchJson(`/p/${sectionId}${path}`, {
+              method,
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+              const prefix = totalDeleted ? `удалено ${totalDeleted}; ` : "";
+              result.textContent = prefix + errorText(res);
+              return;
+            }
+            const raw = res.data && res.data.deleted;
+            const n = raw == null ? 0 : Number(raw);
+            if (Number.isFinite(n)) totalDeleted += n;
+            if (!matching || (res.data && res.data.done) !== false) break;
+          }
+          result.textContent = `удалено ${totalDeleted}`;
+          await load();
+        } finally {
+          syncPager();
         }
-        const n = res.data && res.data.deleted != null ? res.data.deleted : "";
-        result.textContent = n === "" ? `ok ${res.status}` : `удалено ${n}`;
-        await load();
       }
 
       form.addEventListener("submit", (ev) => {

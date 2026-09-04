@@ -10,13 +10,15 @@
 
 Порядок всегда один: Postgres → `migrate` (`/ready` = 200) → `api` и `fgislk` → `admin`. `fgislk` и `api` до 200 на migrate не стартовать (SchemaMismatch). `admin` в БД не ходит.
 
-| Процесс | Порт (пример `.env`) | Обычный режим |
-| --- | --- | --- |
-| `db` | `POSTGRES_PORT` 5433 | Compose |
-| `migrate` | `MIGRATE_PORT` 8080 | Compose |
-| `api` | `API_PORT` 8083 | Compose |
-| `admin` | `ADMIN_PORT` 8082 | Compose |
-| `fgislk` | `FGISLK_PORT` 8081 | **хост**, не контейнер |
+
+| Процесс   | Порт (пример `.env`) | Обычный режим          |
+| --------- | -------------------- | ---------------------- |
+| `db`      | `POSTGRES_PORT` 5433 | Compose                |
+| `migrate` | `MIGRATE_PORT` 8080  | Compose                |
+| `api`     | `API_PORT` 8083      | Compose                |
+| `admin`   | `ADMIN_PORT` 8082    | Compose                |
+| `fgislk`  | `FGISLK_PORT` 8081   | **хост**, не контейнер |
+
 
 Профиль Compose `container` для `fgislk` не включать: Linux-OpenSSL к СПД handshake не проходит. Windows: `FGIS_TLS=schannel` и `.\fgislk\run.ps1`. Ubuntu: `FGIS_TLS=openssl` + gost-engine на хосте (ниже).
 
@@ -160,6 +162,8 @@ sudo ufw allow 3389/tcp
 sudo ufw enable
 ```
 
+
+
 ### 5. `fgislk` на хосте
 
 СПД `fgislk.gov.ru` на Linux требует GOST-TLS: обычный curl даёт `error:0A000410:sslv3 alert handshake failure`. На Windows это закрывает Schannel (`fgislk/run.ps1`) — тот путь не трогать.
@@ -266,6 +270,8 @@ sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 ```
 
+
+
 ### 7. Новая версия программы (обновление с GitHub)
 
 На сервере **не коммитить и не править код**. `.env` при `git pull` не затирается (файла нет в git). Локальные правки на виртуалке мешают pull — их не делать.
@@ -327,7 +333,7 @@ curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8082/health
 Нужен вход (репозиторий закрыли или GitHub всё равно требует авторизацию) — **personal access token**, не пароль сайта.
 
 1. В браузере: github.com → свой профиль → **Settings** → **Developer settings** (внизу слева) → **Personal access tokens** → **Tokens (classic)** → **Generate new token (classic)**.
-2. Note — любое имя, например `dbms-server`. Срок — по желанию. Галка **`public_repo`** (публичный репозиторий) или **`repo`** (если сделаете закрытым). Generate token → **скопировать сразу** (`ghp_…`). Повторно строку GitHub не покажет.
+2. Note — любое имя, например `dbms-server`. Срок — по желанию. Галка `public_repo` (публичный репозиторий) или `repo` (если сделаете закрытым). Generate token → **скопировать сразу** (`ghp_…`). Повторно строку GitHub не покажет.
 3. На сервере, когда git спросит: `Username` — логин GitHub (`AversIgor`); `Password` — **вставить токен** `ghp_…`, Enter. Символы на экране не видны — так и должно быть.
 4. Чтобы не спрашивал каждый раз (токен в домашнем файле, **не коммитить**):
 

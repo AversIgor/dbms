@@ -13,7 +13,7 @@
 - Compose: `db` healthy → этот процесс (`serve --upgrade`) → потребители. `upgrade head`, затем HTTP.
 - Одна реплика; параллельный `upgrade` запрещён.
 - Нет API «создай колонку». Кнопки upgrade в браузере нет.
-- `GET /rows`: таблицы из `models.py` кроме `constant` (не `alembic_version`, не PostGIS). Список с пагинацией и поиском по выбранному полю; `geom` не отдавать. `POST /rows/delete`: выбранные PK или все найденные (`all_matching`; пустой поиск — вся таблица). Лимита на число найденных нет.
+- `GET /rows`: таблицы из `models.py` кроме `constant` (не `alembic_version`, не PostGIS). Список с пагинацией и поиском по выбранному полю; `geom` не отдавать. `POST /rows/delete`: выбранные PK или все найденные (`all_matching`; пустой поиск — вся таблица). `all_matching` — пачками (лимит строк и бюджет времени ответа), в ответе `done`; повторять, пока `done` не true. Лимита на общее число найденных нет.
 
 ## Ограничения и допущения
 
@@ -26,7 +26,7 @@
 ## Интерфейсы
 
 - **Postgres:** `POSTGRES_*` из `.env` (права DDL). Другие процессы не ходят сюда за DDL.
-- **HTTP:** `/health` (жив), `/ready` (БД есть и `revision == head`, иначе 503), `/status`, `GET /panel` (манифест для admin, без action upgrade), `GET /settings` (`writable: false`). `GET /rows?table=&field=&q=&page=&size=` — строки (не `constant`). `POST /rows/delete` JSON `{table, ids}` или `{table, all_matching: true}` (опционально `field`, `q`; без `q` — вся таблица). Нет HTML-страницы схемы.
+- **HTTP:** `/health` (жив), `/ready` (БД есть и `revision == head`, иначе 503), `/status`, `GET /panel` (манифест для admin, без action upgrade), `GET /settings` (`writable: false`). `GET /rows?table=&field=&q=&page=&size=` — строки (не `constant`). `POST /rows/delete` JSON `{table, ids}` или `{table, all_matching: true}` (опционально `field`, `q`; без `q` — вся таблица). Ответ: `deleted`, `done` (`all_matching` и `done: false` — тот же запрос ещё раз). Нет HTML-страницы схемы.
 - **admin:** чтение `/panel`, `/status`, `/rows`; удаление через `/rows/delete`. Таблицы из манифеста — в карточке Spatial data, не в migrate. Константы — HTTP раздела `constants`. upgrade из UI нет.
 - **Потребители:** `GET {MIGRATE_URL}/ready` + свой `REQUIRED_SCHEMA`; несовпадение revision — не стартовать.
 

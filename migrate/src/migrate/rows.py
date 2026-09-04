@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -14,6 +15,8 @@ from migrate.models import Base
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 100
 MAX_DELETE_IDS = 500
+DELETE_CHUNK = 1000
+DELETE_BUDGET_SEC = 12.0
 _SKIP_TABLES = frozenset({"constant"})
 
 
@@ -164,6 +167,14 @@ def list_rows(
     return payload
 
 
+def _delete_chunk(conn, model, pk, where, limit: int) -> int:
+    subq = select(pk)
+    if where is not None:
+        subq = subq.where(where)
+    result = conn.execute(delete(model).where(pk.in_(subq.limit(limit))))
+    return result.rowcount or 0
+
+
 def delete_rows(
     table_name: str,
     ids: list[str] | None,
@@ -176,25 +187,33 @@ def delete_rows(
     pk = _pk_column(mapper)
     eng = make_engine()
     try:
-        with eng.begin() as conn:
-            if all_matching:
-                where = _filter(mapper, field, q)
-                stmt = delete(model)
-                if where is not None:
-                    stmt = stmt.where(where)
-                result = conn.execute(stmt)
-                deleted = result.rowcount or 0
-            else:
-                if not ids:
-                    raise HTTPException(status_code=400, detail="нет идентификаторов")
-                if len(ids) > MAX_DELETE_IDS:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"за один раз не больше {MAX_DELETE_IDS}",
-                    )
-                values = [_coerce_id(item, pk) for item in ids]
+        if all_matching:
+            where = _filter(mapper, field, q)
+            deleted = 0
+            done = False
+            deadline = time.monotonic() + DELETE_BUDGET_SEC
+            while True:
+                with eng.begin() as conn:
+                    n = _delete_chunk(conn, model, pk, where, DELETE_CHUNK)
+                deleted += n
+                if n < DELETE_CHUNK:
+                    done = True
+                    break
+                if time.monotonic() >= deadline:
+                    break
+        else:
+            if not ids:
+                raise HTTPException(status_code=400, detail="нет идентификаторов")
+            if len(ids) > MAX_DELETE_IDS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"за один раз не больше {MAX_DELETE_IDS}",
+                )
+            values = [_coerce_id(item, pk) for item in ids]
+            with eng.begin() as conn:
                 result = conn.execute(delete(model).where(pk.in_(values)))
                 deleted = result.rowcount or 0
+            done = True
     finally:
         eng.dispose()
-    return {"ok": True, "deleted": deleted, "table": table_name}
+    return {"ok": True, "deleted": deleted, "table": table_name, "done": done}
