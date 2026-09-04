@@ -95,11 +95,32 @@ def panel_manifest() -> dict:
                         "label": "кварталы",
                     },
                     {
+                        "name": "clearcut",
+                        "type": "checkbox",
+                        "optional": True,
+                        "label": "лесосеки",
+                    },
+                    {
                         "name": "area",
                         "type": "checkbox",
                         "optional": True,
                         "label": "координаты",
                     },
+                ],
+            },
+            {
+                "id": "clearcut_quarter",
+                "title": "Лесосеки квартала",
+                "method": "GET",
+                "path": "/sync",
+                "query": {"clearcut": "1"},
+                "fields": [
+                    {
+                        "name": "quarter",
+                        "type": "text",
+                        "optional": False,
+                        "label": "Учётный номер квартала",
+                    }
                 ],
             },
             {

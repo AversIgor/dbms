@@ -13,6 +13,7 @@ from fgislk.panel import panel_manifest
 from fgislk.settings import (
     DATA_KIND,
     IMPORT_ORDER,
+    KIND_CLEARCUT,
     REQUIRED_SCHEMA,
     apply_settings,
     settings_view,
@@ -23,6 +24,7 @@ from fgislk.store import (
     history_rows,
     make_engine,
     overlay_status,
+    quarter_exists,
     status_day_meta,
     status_rows,
 )
@@ -37,6 +39,7 @@ from fgislk.windows import (
     moscow_today,
     parse_audit_day,
     parse_subjects,
+    subject_from_quarter_id,
 )
 
 
@@ -68,9 +71,15 @@ def _truthy(value: str | None) -> bool:
 
 
 def _audit_kinds(
-    quarters: str | None, taxation_piece: str | None
+    quarters: str | None,
+    taxation_piece: str | None,
+    clearcut: str | None,
 ) -> list[str] | None:
-    flags = {"quarters": quarters, "taxation_piece": taxation_piece}
+    flags = {
+        "quarters": quarters,
+        "taxation_piece": taxation_piece,
+        "clearcut": clearcut,
+    }
     if not any(raw is not None and raw.strip() != "" for raw in flags.values()):
         return None
     return [kind for kind in IMPORT_ORDER if _truthy(flags.get(kind))]
@@ -232,21 +241,38 @@ async def sync(
     day: str | None = Query(default=None),
     quarters: str | None = Query(default=None),
     taxation_piece: str | None = Query(default=None),
+    clearcut: str | None = Query(default=None),
+    quarter: str | None = Query(default=None),
     area: str | None = Query(default=None),
 ):
     want_start = _truthy(start)
     want_audit = _truthy(audit)
     want_stop = _truthy(stop)
-    flags = sum((want_start, want_audit, want_stop))
+    quarter_id = (quarter or "").strip() or None
+    want_point = _truthy(clearcut) and quarter_id is not None
+    if _truthy(clearcut) and quarter_id is None and not want_audit:
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "clearcut=1 с quarter= или с audit=1"},
+        )
+    if quarter_id is not None and not want_point:
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "quarter= только с clearcut=1 без start/audit/stop"},
+        )
+    flags = sum((want_start, want_audit, want_stop, want_point))
     if flags == 0:
         return JSONResponse(
             status_code=400,
-            content={"ok": False, "error": "нужен start=1, audit=1 или stop=1"},
+            content={
+                "ok": False,
+                "error": "нужен start=1, audit=1, stop=1 или clearcut=1&quarter=",
+            },
         )
     if flags > 1:
         return JSONResponse(
             status_code=400,
-            content={"ok": False, "error": "start, audit и stop вместе нельзя"},
+            content={"ok": False, "error": "start, audit, stop и точечный опрос вместе нельзя"},
         )
     has_day = day is not None and day.strip() != ""
     if has_day and not want_audit:
@@ -258,10 +284,15 @@ async def sync(
         raw is not None and raw.strip() != ""
         for raw in (quarters, taxation_piece)
     )
+    if want_audit and clearcut is not None and str(clearcut).strip() != "":
+        has_kind_flag = True
     if has_kind_flag and not want_audit:
         return JSONResponse(
             status_code=400,
-            content={"ok": False, "error": "quarters= и taxation_piece= только с audit=1"},
+            content={
+                "ok": False,
+                "error": "quarters=, taxation_piece= и clearcut= только с audit=1",
+            },
         )
     has_area_flag = area is not None and area.strip() != ""
     if has_area_flag and not want_audit and not want_start:
@@ -287,17 +318,48 @@ async def sync(
 
     kinds: list[str] | None = None
     if want_audit:
-        kinds = _audit_kinds(quarters, taxation_piece)
+        kinds = _audit_kinds(quarters, taxation_piece, clearcut)
         if kinds is not None and not kinds:
             return JSONResponse(
                 status_code=400,
-                content={"ok": False, "error": "аудит: отметьте выделы и/или кварталы"},
+                content={
+                    "ok": False,
+                    "error": "аудит: отметьте выделы, кварталы и/или лесосеки",
+                },
             )
+    if want_point:
+        kinds = [KIND_CLEARCUT]
 
-    need_area = True if want_start else _truthy(area)
+    need_area = True if want_start or want_point else _truthy(area)
 
     codes: list[str] | None
-    if subject is None or subject.strip() == "":
+    require_lock: bool
+    if want_point:
+        assert quarter_id is not None
+        try:
+            derived = subject_from_quarter_id(quarter_id)
+        except ValueError as exc:
+            return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+        if subject is not None and subject.strip() != "":
+            try:
+                given = parse_subjects(subject)
+            except ValueError as exc:
+                return JSONResponse(
+                    status_code=400, content={"ok": False, "error": str(exc)}
+                )
+            if len(given) != 1 or given[0] != derived:
+                return JSONResponse(
+                    status_code=400,
+                    content={"ok": False, "error": "subject= не совпадает с номером квартала"},
+                )
+        codes = [derived]
+        require_lock = True
+        if not quarter_exists(app.state.engine, derived, quarter_id):
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "error": "квартал не найден в quarters"},
+            )
+    elif subject is None or subject.strip() == "":
         codes = None
         require_lock = False
     else:
@@ -332,6 +394,7 @@ async def sync(
         "subjects": codes if codes is not None else "01-99",
         "kinds": kinds if kinds is not None else list(IMPORT_ORDER),
         "area": need_area,
+        "quarter": quarter_id,
     }
     if want_start and codes is None:
         kick: asyncio.Event = app.state.kick
@@ -353,6 +416,7 @@ async def sync(
                 audit_from=audit_from,
                 kinds=kinds,
                 need_area=need_area,
+                quarter_id=quarter_id if want_point else None,
             )
         finally:
             await spd.aclose()

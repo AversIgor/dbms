@@ -8,22 +8,26 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 
-REQUIRED_SCHEMA = "0010_crs"
+REQUIRED_SCHEMA = "0013_fgis_id_unique"
 KIND_QUARTERS = "quarters"
 KIND_TAXATION_PIECE = "taxation_piece"
+KIND_CLEARCUT = "clearcut"
 DATA_KIND = KIND_TAXATION_PIECE
-IMPORT_ORDER = (KIND_QUARTERS, KIND_TAXATION_PIECE)
+IMPORT_ORDER = (KIND_QUARTERS, KIND_TAXATION_PIECE, KIND_CLEARCUT)
 DATA_KIND_LABELS = {
     KIND_QUARTERS: "кварталы",
     KIND_TAXATION_PIECE: "выделы",
+    KIND_CLEARCUT: "лесосеки",
 }
 SPD_RESOURCE = {
     KIND_QUARTERS: "forestQuarter",
     KIND_TAXATION_PIECE: "taxationPiece",
+    KIND_CLEARCUT: "clearcut",
 }
 KIND_TABLE = {
     KIND_QUARTERS: "quarters",
     KIND_TAXATION_PIECE: "taxation_piece",
+    KIND_CLEARCUT: "clearcut",
 }
 DEFAULT_MAX_WORKERS = 5
 DEFAULT_BATCH_WORKERS = 3
@@ -240,7 +244,10 @@ def _validate_updates(payload: dict) -> dict[str, str | None]:
             updates[key] = None
             continue
         text = str(value).strip()
-        if key in ("FGIS_MAX_WORKERS", "FGIS_BATCH_WORKERS"):
+        if key in (
+            "FGIS_MAX_WORKERS",
+            "FGIS_BATCH_WORKERS",
+        ):
             try:
                 number = int(text)
             except ValueError as exc:

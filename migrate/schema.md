@@ -1,6 +1,6 @@
 # Схема БД (актуальная)
 
-Источник: `alembic/versions/` + `src/migrate/models.py`. Head: `0010_crs`.
+Источник: `alembic/versions/` + `src/migrate/models.py`. Head: `0013_fgis_id_unique`.
 
 ```mermaid
 erDiagram
@@ -8,8 +8,8 @@ erDiagram
     varchar version_num PK
   }
   taxation_piece {
-    varchar subject PK "субъект, индекс"
-    varchar fgis_id PK "учётный номер выдела ФГИС ЛК, индекс"
+    varchar fgis_id PK "учётный номер выдела ФГИС ЛК, уникален"
+    varchar subject "субъект, индекс"
     varchar taxation_piece "номер выдела"
     varchar quarter "номер квартала"
     numeric area "площадь"
@@ -21,8 +21,8 @@ erDiagram
     varchar crs "система координат СПД"
   }
   quarters {
-    varchar subject PK "субъект, индекс"
-    varchar fgis_id PK "учётный номер квартала ФГИС ЛК, индекс"
+    varchar fgis_id PK "учётный номер квартала ФГИС ЛК, уникален"
+    varchar subject "субъект, индекс"
     varchar subforestry "участковое лесничество"
     varchar quarter "номер квартала"
     varchar tract "урочище"
@@ -32,10 +32,12 @@ erDiagram
     int semantic_id "идентификатор семантики WFS"
     geometry geom "контур, gist"
     varchar crs "система координат СПД"
+    date clearcut_polled_at "дата опроса лесосек, индекс с субъектом"
+    boolean has_clearcuts "есть лесосеки"
   }
   clearcut {
-    varchar subject PK "субъект, индекс"
-    varchar fgis_id PK "учётный номер лесосеки ФГИС ЛК, индекс"
+    varchar fgis_id PK "учётный номер лесосеки ФГИС ЛК, уникален"
+    varchar subject "субъект, индекс"
     varchar quarter "номер квартала"
     numeric area "площадь"
     varchar status "status"
@@ -43,6 +45,7 @@ erDiagram
     date actuality_date "дата актуальности (появление в ФГИС ЛК)"
     int semantic_id "идентификатор семантики WFS"
     geometry geom "контур, gist"
+    varchar crs "система координат СПД"
     varchar limitation_dt "дата отвода"
     varchar clearcut_no "номер лесосеки"
     varchar basis_doc_no "номер документа-основания"
@@ -65,10 +68,10 @@ erDiagram
 | --- | --- |
 | extension `postgis` | геометрия (миграция `0001_postgis`) |
 | `alembic_version` | текущая revision |
-| `taxation_piece` | выдел: семантика + контур (`0002`) + `read_at` (`0005`) + `actuality_date` (`0006`) + `semantic_id` (`0007`) + `crs` (`0010`) |
-| `quarters` | квартал: семантика + контур (`0008`) + `crs` (`0010`) |
-| `clearcut` | лесосека: семантика + контур (`0009`) |
+| `taxation_piece` | выдел: семантика + контур (`0002`) + `read_at` (`0005`) + `actuality_date` (`0006`) + `semantic_id` (`0007`) + `crs` (`0010`) + PK `fgis_id` (`0013`) |
+| `quarters` | квартал: семантика + контур (`0008`) + `crs` (`0010`) + опрос лесосек (`0011`) + PK `fgis_id` (`0013`) |
+| `clearcut` | лесосека: семантика + контур (`0009`) + `crs` (`0012`) + PK `fgis_id` (`0013`) |
 | `fgis_import_history` | журнал прогонов fgislk (`0003` + окно `0004_fgis_import_period`) |
 | таблицы PostGIS (`spatial_ref_sys` и др.) | ставит расширение, не описывать в `models.py` |
 
-Связь с другими разделами — пара `subject` + `fgis_id` (см. [`spatialData/CONTEXT.md`](../spatialData/CONTEXT.md)). Watermark ежедневного импорта — `MAX(day)` успешных строк `fgis_import_history` по субъекту и `data_kind`. Аудит не ходит в СПД за карточкой, если `read_at` не старше 2 дней (МСК).
+Связь с другими разделами — учётный номер `fgis_id` (см. [`spatialData/CONTEXT.md`](../spatialData/CONTEXT.md)). Watermark ежедневного импорта — `MAX(day)` успешных строк `fgis_import_history` по субъекту и `data_kind`. Аудит не ходит в СПД за карточкой, если `read_at` не старше 2 дней (МСК).

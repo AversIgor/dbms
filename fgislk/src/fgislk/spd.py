@@ -18,6 +18,7 @@ import httpx
 
 from fgislk.settings import fgis_credentials, fgis_host, fgis_tls, http_workers
 from fgislk.windows import add_month
+from fgislk.mapper import ids_from_clearcut_list, ids_from_payload
 
 _RETRY_ATTEMPTS = 3
 _TIMEOUT_SECONDS = 180
@@ -54,14 +55,17 @@ class SpdError(Exception):
 
 def _card_from_response(data: dict[str, Any]) -> dict[str, Any] | None:
     payload = data.get("payload")
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("modifyDttm") in (None, "") and data.get("modifyDttm") not in (
-        None,
-        "",
-    ):
-        payload = {**payload, "modifyDttm": data["modifyDttm"]}
-    return payload
+    if isinstance(payload, dict):
+        if payload.get("modifyDttm") in (None, "") and data.get("modifyDttm") not in (
+            None,
+            "",
+        ):
+            payload = {**payload, "modifyDttm": data["modifyDttm"]}
+        return payload
+    # лесосека: поля в корне, без payload
+    if "clearcutNo" in data and "errors" not in data:
+        return data
+    return None
 
 
 def spd_base_url(host: str | None = None) -> str:
@@ -229,6 +233,14 @@ def fgis_ssl_context() -> ssl.SSLContext:
     return ctx
 
 
+def _card_area_params(resource: str, need_area: bool) -> dict[str, str] | None:
+    if resource == "clearcut":
+        return {"checkCoordinate": "true" if need_area else "false"}
+    if not need_area:
+        return None
+    return {"isNeedArea": "true"}
+
+
 class SpdClient:
     def __init__(self, base_url: str | None = None) -> None:
         self._base = (base_url or spd_base_url()).rstrip("/")
@@ -347,6 +359,8 @@ class SpdClient:
                     status, body = await self._curl_get(self._url(path, params))
                     if status >= 500:
                         last_error = SpdError(f"СПД {status} {path}: {body[:500]}")
+                        if "PIL_CLEARCUT0012" in body:
+                            raise last_error
                         continue
                     if status >= 400:
                         raise SpdError(f"СПД {status} {path}: {body[:500]}")
@@ -365,6 +379,8 @@ class SpdClient:
                     last_error = SpdError(
                         f"СПД {response.status_code} {path}: {response.text[:500]}"
                     )
+                    if "PIL_CLEARCUT0012" in response.text:
+                        raise last_error
                     continue
                 if response.status_code >= 400:
                     raise SpdError(
@@ -376,7 +392,9 @@ class SpdClient:
                     raise SpdError(f"СПД не JSON {path}: {exc}") from exc
             except (httpx.HTTPError, SpdError) as exc:
                 last_error = exc if isinstance(exc, SpdError) else SpdError(str(exc))
-                if isinstance(exc, SpdError) and "СПД 4" in str(exc):
+                if isinstance(exc, SpdError) and (
+                    "СПД 4" in str(exc) or "PIL_CLEARCUT0012" in str(exc)
+                ):
                     raise
                 continue
         raise last_error or SpdError(f"СПД недоступен {path}")
@@ -405,7 +423,7 @@ class SpdClient:
         self, fgis_id: str, *, resource: str, need_area: bool = False
     ) -> dict[str, Any] | None:
         path = f"{resource}/{fgis_id}"
-        params = {"isNeedArea": "true"} if need_area else None
+        params = _card_area_params(resource, need_area)
         try:
             data = await self._get(path, params)
         except SpdError as exc:
@@ -415,6 +433,27 @@ class SpdClient:
             return None
         return _card_from_response(data)
 
+    async def _fill_clearcut_without_area(
+        self, ids: list[str], out: list[dict[str, Any] | None]
+    ) -> list[dict[str, Any] | None]:
+        missing = [index for index, card in enumerate(out) if card is None]
+        if not missing:
+            return out
+        log.warning(
+            "лесосеки: повтор %s карточек без checkCoordinate", len(missing)
+        )
+        recovered = await asyncio.gather(
+            *[
+                self._card_via_http(
+                    ids[index], resource="clearcut", need_area=False
+                )
+                for index in missing
+            ]
+        )
+        for index, card in zip(missing, recovered, strict=True):
+            out[index] = card
+        return out
+
     async def cards(
         self, fgis_ids: Sequence[str], *, resource: str, need_area: bool = False
     ) -> list[dict[str, Any] | None]:
@@ -422,9 +461,9 @@ class SpdClient:
         ids = list(fgis_ids)
         if not ids:
             return []
-        params = {"isNeedArea": "true"} if need_area else None
+        params = _card_area_params(resource, need_area)
         if not self._curl:
-            return list(
+            out = list(
                 await asyncio.gather(
                     *[
                         self._card_via_http(
@@ -434,6 +473,9 @@ class SpdClient:
                     ]
                 )
             )
+            if resource == "clearcut" and need_area:
+                return await self._fill_clearcut_without_area(ids, out)
+            return out
         urls = [self._url(f"{resource}/{fgis_id}", params) for fgis_id in ids]
         parsed: list[tuple[int, str]] | None = None
         last_error: Exception | None = None
@@ -450,7 +492,7 @@ class SpdClient:
                 len(ids),
                 last_error,
             )
-            return list(
+            out = list(
                 await asyncio.gather(
                     *[
                         self._card_via_http(
@@ -460,6 +502,9 @@ class SpdClient:
                     ]
                 )
             )
+            if resource == "clearcut" and need_area:
+                return await self._fill_clearcut_without_area(ids, out)
+            return out
         out, retry_ids, retry_at = await asyncio.to_thread(
             _cards_from_parsed, parsed, ids
         )
@@ -474,6 +519,8 @@ class SpdClient:
             )
             for index, card in zip(retry_at, recovered, strict=True):
                 out[index] = card
+        if resource == "clearcut" and need_area:
+            return await self._fill_clearcut_without_area(ids, out)
         return out
 
     async def changed_ids(
@@ -488,8 +535,6 @@ class SpdClient:
     ) -> list[str]:
         """Список id за окно. Аудит (`shrink`): сначала весь период; нет payload —
         start += месяц, endDate без изменения (как 1С). Инкремент — один запрос."""
-        from fgislk.mapper import ids_from_payload
-
         current = start
         while current <= end:
             if on_window is not None:
@@ -504,6 +549,18 @@ class SpdClient:
                 continue
             return ids_from_payload(data["payload"])
         return []
+
+    async def clearcut_ids_by_quarter(self, quarter_fgis_id: str) -> list[str]:
+        try:
+            data = await self._get(f"clearcut/get-no-by-quarter/{quarter_fgis_id}")
+        except SpdError as exc:
+            if "PIL_CLEARCUT0012" in str(exc):
+                return []
+            raise
+        try:
+            return ids_from_clearcut_list(data)
+        except TypeError as exc:
+            raise SpdError(str(exc)) from exc
 
 
 def _cards_from_parsed(

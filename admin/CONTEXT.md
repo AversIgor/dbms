@@ -12,7 +12,7 @@
 - Каталог зашит: `migrate`, `fgislk`, `spatialData`. Базовый URL — из env (`MIGRATE_URL`, `FGISLK_URL`); у spatialData — stub, без URL. `GET /catalog` отдаёт `id`, `title`, `has_http`, при необходимости `stub`; `base_url` в браузер не отдавать.
 - Команды, колонки, фильтры и пагинация — только из `GET /panel` раздела, не зашивать `start=1` в HTML. Нет отдельного блока «Служебные данные».
 - Браузер ходит только на admin. Прокси `/p/{id}/…` — только на URL из каталога. Отказ: пустой путь, начинается с `/`, `\`, сегменты `.` или `..`, схема не `http`/`https`, чужой hostname или port, userinfo. Методы: `GET`/`PUT`/`POST`/`PATCH`/`HEAD`. Наверх — только заголовок `content-type`.
-- Карточка HTTP-раздела: `GET /p/{id}/panel`, затем `actions` / `status` / `tables`. Checkbox в команде всегда кладёт в query `1` или `0`. Статус опрашивать каждые 5 с. Нет `status.columns` — фолбэк по JSON `/status`: массив `subjects`, иначе `revision` (префикс до `_`), иначе `history`, иначе `pre` с JSON.
+- Карточка HTTP-раздела: `GET /p/{id}/panel`, затем `actions` / `status` / `tables`. Checkbox в команде всегда кладёт в query `1` или `0`. У команды рядом с кнопкой — HTTP-статус и поле `error` из JSON ответа. Статус опрашивать каждые 5 с. Нет `status.columns` — фолбэк по JSON `/status`: массив `subjects`, иначе `revision` (префикс до `_`), иначе `history`, иначе `pre` с JSON.
 - Секреты и `POSTGRES_*` не показывать. Логина нет: доступ как у ручных GET на хосте.
 - Не оркестратор: не рестартует процессы, не делает `upgrade`.
 

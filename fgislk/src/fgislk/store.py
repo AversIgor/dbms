@@ -21,7 +21,8 @@ _UPSERT = text(
         :subject, :fgis_id, :taxation_piece, :quarter, :area, :status, :read_at,
         :actuality_date, ST_GeomFromText(:geom), :crs
     )
-    ON CONFLICT (subject, fgis_id) DO UPDATE SET
+    ON CONFLICT (fgis_id) DO UPDATE SET
+        subject = EXCLUDED.subject,
         taxation_piece = EXCLUDED.taxation_piece,
         quarter = EXCLUDED.quarter,
         area = EXCLUDED.area,
@@ -43,7 +44,8 @@ _UPSERT_QUARTERS = text(
         :subject, :fgis_id, :subforestry, :quarter, :tract, :status, :read_at,
         :actuality_date, ST_GeomFromText(:geom), :crs
     )
-    ON CONFLICT (subject, fgis_id) DO UPDATE SET
+    ON CONFLICT (fgis_id) DO UPDATE SET
+        subject = EXCLUDED.subject,
         subforestry = EXCLUDED.subforestry,
         quarter = EXCLUDED.quarter,
         tract = COALESCE(EXCLUDED.tract, quarters.tract),
@@ -52,6 +54,32 @@ _UPSERT_QUARTERS = text(
         actuality_date = COALESCE(EXCLUDED.actuality_date, quarters.actuality_date),
         geom = COALESCE(EXCLUDED.geom, quarters.geom),
         crs = COALESCE(EXCLUDED.crs, quarters.crs)
+    """
+)
+
+_UPSERT_CLEARCUT = text(
+    """
+    INSERT INTO clearcut (
+        subject, fgis_id, quarter, area, status, read_at,
+        actuality_date, geom, crs, limitation_dt, clearcut_no, basis_doc_no
+    )
+    VALUES (
+        :subject, :fgis_id, :quarter, :area, :status, :read_at,
+        :actuality_date, ST_GeomFromText(:geom), :crs, :limitation_dt,
+        :clearcut_no, :basis_doc_no
+    )
+    ON CONFLICT (fgis_id) DO UPDATE SET
+        subject = EXCLUDED.subject,
+        quarter = EXCLUDED.quarter,
+        area = EXCLUDED.area,
+        status = EXCLUDED.status,
+        read_at = EXCLUDED.read_at,
+        actuality_date = COALESCE(EXCLUDED.actuality_date, clearcut.actuality_date),
+        geom = COALESCE(EXCLUDED.geom, clearcut.geom),
+        crs = COALESCE(EXCLUDED.crs, clearcut.crs),
+        limitation_dt = COALESCE(EXCLUDED.limitation_dt, clearcut.limitation_dt),
+        clearcut_no = EXCLUDED.clearcut_no,
+        basis_doc_no = COALESCE(EXCLUDED.basis_doc_no, clearcut.basis_doc_no)
     """
 )
 
@@ -202,6 +230,110 @@ def upsert_quarters(conn: Connection, rows: Sequence[dict[str, Any]]) -> None:
     )
 
 
+def upsert_clearcuts(conn: Connection, rows: Sequence[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    conn.execute(
+        _UPSERT_CLEARCUT,
+        [
+            {
+                "subject": row.get("subject"),
+                "fgis_id": row.get("fgis_id"),
+                "quarter": row.get("quarter"),
+                "area": row.get("area"),
+                "status": row.get("status"),
+                "read_at": row.get("read_at"),
+                "actuality_date": row.get("actuality_date"),
+                "geom": row.get("geom"),
+                "crs": row.get("crs"),
+                "limitation_dt": row.get("limitation_dt"),
+                "clearcut_no": row.get("clearcut_no"),
+                "basis_doc_no": row.get("basis_doc_no"),
+            }
+            for row in rows
+        ],
+    )
+
+
+def quarter_exists(eng: Engine, subject: str, fgis_id: str) -> bool:
+    with eng.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT 1 FROM quarters
+                WHERE subject = :subject AND fgis_id = :fgis_id
+                """
+            ),
+            {"subject": subject, "fgis_id": fgis_id},
+        ).first()
+    return row is not None
+
+
+def quarters_for_clearcut(
+    conn: Connection,
+    subject: str,
+    *,
+    audit: bool,
+    period_start: date | None,
+    quarter_id: str | None = None,
+    full_scan: bool = False,
+) -> list[str]:
+    params: dict[str, Any] = {"subject": subject}
+    if quarter_id:
+        sql = """
+            SELECT fgis_id FROM quarters
+            WHERE subject = :subject AND fgis_id = :qid
+            """
+        params["qid"] = quarter_id
+    elif audit:
+        sql = """
+            SELECT fgis_id FROM quarters
+            WHERE subject = :subject
+              AND (clearcut_polled_at IS NULL OR clearcut_polled_at < :start)
+            ORDER BY fgis_id
+            """
+        params["start"] = period_start
+    elif full_scan:
+        sql = """
+            SELECT fgis_id FROM quarters
+            WHERE subject = :subject
+            ORDER BY fgis_id
+            """
+    else:
+        sql = """
+            SELECT fgis_id FROM quarters
+            WHERE subject = :subject AND has_clearcuts
+            ORDER BY fgis_id
+            """
+    rows = conn.execute(text(sql), params)
+    return [str(row[0]) for row in rows]
+
+
+def stamp_clearcut_poll(
+    conn: Connection,
+    subject: str,
+    quarter_id: str,
+    *,
+    polled_at: date,
+    has_clearcuts: bool,
+) -> None:
+    conn.execute(
+        text(
+            """
+            UPDATE quarters
+            SET clearcut_polled_at = :polled_at, has_clearcuts = :has_clearcuts
+            WHERE subject = :subject AND fgis_id = :qid
+            """
+        ),
+        {
+            "subject": subject,
+            "qid": quarter_id,
+            "polled_at": polled_at,
+            "has_clearcuts": has_clearcuts,
+        },
+    )
+
+
 def recent_read_ids(
     conn: Connection,
     subject: str,
@@ -275,6 +407,43 @@ def progress_label(updated: int, total: int | None) -> str | None:
     return f"{min(100, int(updated * 100 / total))}%"
 
 
+_CLEARCUT_FAIL = "опрос лесосек: часть кварталов не закрыта"
+_HISTORY_ERROR_MAX = 2000
+
+
+def clearcut_fail_error(ids: Sequence[str]) -> str:
+    unique = [str(item).strip() for item in ids if str(item).strip()]
+    if not unique:
+        return _CLEARCUT_FAIL
+    shown: list[str] = []
+    for qid in unique:
+        candidate = _CLEARCUT_FAIL + "\n" + "\n".join([*shown, qid])
+        rest = len(unique) - len(shown) - 1
+        extra = f"\n…+{rest}" if rest > 0 else ""
+        if len(candidate) + len(extra) > _HISTORY_ERROR_MAX:
+            leftover = len(unique) - len(shown)
+            if leftover <= 0:
+                break
+            return _CLEARCUT_FAIL + "\n" + "\n".join(shown) + f"\n…+{leftover}"
+        shown.append(qid)
+    return _CLEARCUT_FAIL + "\n" + "\n".join(shown)
+
+
+def display_error(error: str | None, extra: Any = None) -> str | None:
+    if isinstance(extra, (list, tuple)) and extra:
+        return clearcut_fail_error(extra)
+    if not error:
+        return None
+    if "\n" in error:
+        return error
+    marker = f"{_CLEARCUT_FAIL}: "
+    if error.startswith(marker):
+        parts = [p.strip() for p in error[len(marker) :].split(",") if p.strip()]
+        if parts:
+            return clearcut_fail_error(parts)
+    return error
+
+
 def is_audit(
     *,
     period_start: date | str | None,
@@ -311,7 +480,7 @@ def _public_row(
         "day": day if isinstance(day, str) or day is None else day.isoformat(),
         "result": data["result"],
         "updated_count": data["updated_count"],
-        "error": data.get("error"),
+        "error": display_error(data.get("error")),
         "ran_at": ran.isoformat() if hasattr(ran, "isoformat") else ran,
         "period_start": (
             period_start
@@ -339,7 +508,7 @@ def _live_row(job: dict[str, Any], last: dict[str, Any] | None) -> dict[str, Any
         "day": None,
         "result": "running",
         "updated_count": updated,
-        "error": None,
+        "error": display_error(job.get("error")),
         "ran_at": None,
         "period_start": job.get("period_start"),
         "period_end": job.get("period_end"),

@@ -7,9 +7,14 @@ from typing import Any
 
 from sqlalchemy.engine import Engine
 
-from fgislk.mapper import quarter_row_from_payload, row_from_payload
+from fgislk.mapper import (
+    clearcut_row_from_payload,
+    quarter_row_from_payload,
+    row_from_payload,
+)
 from fgislk.settings import (
     IMPORT_ORDER,
+    KIND_CLEARCUT,
     KIND_QUARTERS,
     KIND_TAXATION_PIECE,
     SPD_RESOURCE,
@@ -19,9 +24,12 @@ from fgislk.settings import (
 from fgislk.spd import SpdClient, SpdError, kill_all_curl
 from fgislk.store import (
     last_ok_day,
+    quarters_for_clearcut,
     recent_read_ids,
+    stamp_clearcut_poll,
     try_lock_subject,
     unlock_subject,
+    upsert_clearcuts,
     upsert_pieces,
     upsert_quarters,
     write_history,
@@ -30,6 +38,7 @@ from fgislk.windows import (
     all_subjects,
     audit_read_since,
     audit_window,
+    clearcut_full_scan,
     incremental_window,
     moscow_today,
     yesterday,
@@ -42,10 +51,12 @@ FLUSH_BATCH = 100
 _ROW_FROM = {
     KIND_QUARTERS: quarter_row_from_payload,
     KIND_TAXATION_PIECE: row_from_payload,
+    KIND_CLEARCUT: clearcut_row_from_payload,
 }
 _UPSERT = {
     KIND_QUARTERS: upsert_quarters,
     KIND_TAXATION_PIECE: upsert_pieces,
+    KIND_CLEARCUT: upsert_clearcuts,
 }
 
 
@@ -158,6 +169,7 @@ async def run_subject(
     audit_from: date | None = None,
     kinds: list[str] | None = None,
     need_area: bool = True,
+    quarter_id: str | None = None,
 ) -> str:
     conn = engine.connect()
     gen: int | None = None
@@ -204,25 +216,49 @@ async def run_subject(
                         updated_count=0,
                         changed_total=None,
                     )
-                    updated = await _import_window(
-                        conn,
-                        spd,
-                        subject,
-                        start,
-                        end,
-                        kind=kind,
-                        shrink=audit,
-                        running=running,
-                        gen=gen,
-                        commit_every=FLUSH_BATCH if audit else None,
-                        skip_fresh=True,
-                        fresh_since=(
-                            audit_read_since(today) if audit else yesterday(today)
-                        ),
-                        read_at=today,
-                        history_day=history_day,
-                        need_area=need_area,
-                    )
+                    if kind == KIND_CLEARCUT:
+                        updated = await _import_clearcuts(
+                            conn,
+                            spd,
+                            subject,
+                            start,
+                            end,
+                            audit=audit,
+                            running=running,
+                            gen=gen,
+                            skip_fresh=quarter_id is None,
+                            fresh_since=(
+                                audit_read_since(today)
+                                if audit
+                                else yesterday(today)
+                            ),
+                            read_at=today,
+                            history_day=history_day,
+                            need_area=need_area,
+                            quarter_id=quarter_id,
+                        )
+                    else:
+                        updated = await _import_window(
+                            conn,
+                            spd,
+                            subject,
+                            start,
+                            end,
+                            kind=kind,
+                            shrink=audit,
+                            running=running,
+                            gen=gen,
+                            commit_every=FLUSH_BATCH if audit else None,
+                            skip_fresh=True,
+                            fresh_since=(
+                                audit_read_since(today)
+                                if audit
+                                else yesterday(today)
+                            ),
+                            read_at=today,
+                            history_day=history_day,
+                            need_area=need_area,
+                        )
                     if not running.same_gen(gen) or running.halted():
                         return "stopped"
                     write_history(
@@ -291,6 +327,146 @@ async def run_subject(
         conn.close()
         if gen is not None:
             await running.release(subject, gen)
+
+
+async def _import_clearcuts(
+    conn,
+    spd: SpdClient,
+    subject: str,
+    start: date,
+    end: date,
+    *,
+    audit: bool,
+    running: RunningSet,
+    gen: int,
+    skip_fresh: bool,
+    fresh_since: date | None,
+    read_at: date,
+    history_day: date,
+    need_area: bool,
+    quarter_id: str | None,
+) -> int:
+    if not running.same_gen(gen) or running.halted():
+        raise asyncio.CancelledError
+    queue = quarters_for_clearcut(
+        conn,
+        subject,
+        audit=audit,
+        period_start=start,
+        quarter_id=quarter_id,
+        full_scan=(
+            not audit
+            and not quarter_id
+            and clearcut_full_scan(subject, read_at)
+        ),
+    )
+    total = len(queue)
+    upserted = 0
+    processed = 0
+    await running.update(
+        subject, updated_count=0, changed_total=total
+    )
+    db_lock = asyncio.Lock()
+    inner = asyncio.Semaphore(batch_workers())
+    since = fresh_since or audit_read_since(read_at)
+
+    async def one_quarter(qid: str) -> None:
+        nonlocal upserted, processed
+        async with inner:
+            if not running.same_gen(gen) or running.halted():
+                raise asyncio.CancelledError
+            try:
+                ids = await spd.clearcut_ids_by_quarter(qid)
+            except SpdError as exc:
+                log.warning("список лесосек квартала %s: %s", qid, exc)
+                return
+            to_fetch = ids
+            skipped = 0
+            async with db_lock:
+                if skip_fresh and ids:
+                    fresh = recent_read_ids(
+                        conn, subject, since, ids, data_kind=KIND_CLEARCUT
+                    )
+                    to_fetch = [fgis_id for fgis_id in ids if fgis_id not in fresh]
+                    skipped = len(ids) - len(to_fetch)
+            n = skipped
+            missing = False
+            for offset in range(0, len(to_fetch), FLUSH_BATCH):
+                if not running.same_gen(gen) or running.halted():
+                    raise asyncio.CancelledError
+                chunk = to_fetch[offset : offset + FLUSH_BATCH]
+                payloads: list[dict[str, Any] | None] | None = None
+                for attempt in range(3):
+                    try:
+                        payloads = await spd.cards(
+                            chunk,
+                            resource=SPD_RESOURCE[KIND_CLEARCUT],
+                            need_area=need_area,
+                        )
+                        break
+                    except SpdError:
+                        log.warning(
+                            "карточки лесосек субъекта %s квартал %s, попытка %s",
+                            subject,
+                            qid,
+                            attempt + 1,
+                        )
+                if payloads is None:
+                    missing = True
+                    break
+                if any(item is None for item in payloads):
+                    log.warning(
+                        "квартал %s: часть карточек лесосек без ответа", qid
+                    )
+                    missing = True
+                rows = await asyncio.to_thread(
+                    _rows_from_payloads,
+                    KIND_CLEARCUT,
+                    subject,
+                    chunk,
+                    payloads,
+                    read_at,
+                )
+                async with db_lock:
+                    if not running.same_gen(gen) or running.halted():
+                        raise asyncio.CancelledError
+                    if rows:
+                        upsert_clearcuts(conn, rows)
+                    n += len(rows)
+                    conn.commit()
+            if missing:
+                log.warning("квартал %s: не все карточки лесосек", qid)
+                return
+            async with db_lock:
+                if not running.same_gen(gen) or running.halted():
+                    raise asyncio.CancelledError
+                stamp_clearcut_poll(
+                    conn,
+                    subject,
+                    qid,
+                    polled_at=read_at,
+                    has_clearcuts=bool(ids),
+                )
+                conn.commit()
+                upserted += n
+                processed += 1
+                await running.update(subject, updated_count=upserted)
+                if audit and processed % FLUSH_BATCH == 0:
+                    write_history(
+                        conn,
+                        subject=subject,
+                        day=history_day,
+                        result="partial",
+                        updated_count=upserted,
+                        error=None,
+                        data_kind=KIND_CLEARCUT,
+                        period_start=start,
+                        period_end=end,
+                    )
+
+    await asyncio.gather(*[one_quarter(qid) for qid in queue])
+    await running.update(subject, updated_count=upserted)
+    return upserted
 
 
 async def _import_window(
@@ -480,6 +656,7 @@ async def run_subjects(
     audit_from: date | None = None,
     kinds: list[str] | None = None,
     need_area: bool = True,
+    quarter_id: str | None = None,
 ) -> None:
     targets = subjects if subjects is not None else all_subjects()
     semaphore = asyncio.Semaphore(max_workers())
@@ -496,6 +673,7 @@ async def run_subjects(
                 audit_from=audit_from,
                 kinds=kinds,
                 need_area=need_area,
+                quarter_id=quarter_id,
             )
 
     tasks = [running.track(asyncio.create_task(one(code))) for code in targets]

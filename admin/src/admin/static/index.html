@@ -63,7 +63,8 @@
     button { cursor: pointer; }
     button:disabled { cursor: default; opacity: 0.45; }
     table { border-collapse: collapse; width: 100%; font-size: 0.85rem; margin-top: 0.4rem; }
-    th, td { border: 1px solid var(--line); padding: 0.25rem 0.4rem; text-align: left; vertical-align: top; }
+    th, td { border: 1px solid var(--line); padding: 0.25rem 0.4rem; text-align: left; vertical-align: top; word-break: break-word; white-space: pre-wrap; }
+    span.result { max-width: 42rem; word-break: break-word; }
     tr.running { background: var(--ok-bg); }
     .pager { display: flex; align-items: center; gap: 0.35rem; }
     pre {
@@ -319,7 +320,15 @@
           const method = (action.method || "GET").toUpperCase();
           result.textContent = "…";
           const res = await fetchJson(`/p/${sectionId}${rel}`, { method });
-          result.textContent = res.ok ? `ok ${res.status}` : `ошибка ${res.status}`;
+          if (res.ok) {
+            result.textContent = `ok ${res.status}`;
+          } else {
+            const err = res.data && (res.data.error || res.data.detail);
+            const text = typeof err === "string" ? err : err ? JSON.stringify(err) : "";
+            result.textContent = text
+              ? `ошибка ${res.status}: ${text}`
+              : `ошибка ${res.status}`;
+          }
           refreshStatus(card, sectionId, panel);
         });
         wrap.appendChild(form);

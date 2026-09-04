@@ -9,7 +9,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from geoalchemy2 import Geometry
-from sqlalchemy import Date, DateTime, Index, Integer, Numeric, PrimaryKeyConstraint, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Index, Integer, Numeric, PrimaryKeyConstraint, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -22,8 +22,7 @@ class TaxationPiece(Base):
 
     __tablename__ = "taxation_piece"
     __table_args__ = (
-        PrimaryKeyConstraint("subject", "fgis_id", name="taxation_piece_pkey"),
-        Index("ix_taxation_piece_fgis_id", "fgis_id"),
+        PrimaryKeyConstraint("fgis_id", name="taxation_piece_pkey"),
         Index("ix_taxation_piece_subject", "subject"),
         Index("ix_taxation_piece_subject_read_at", "subject", "read_at"),
         Index("ix_taxation_piece_geom", "geom", postgresql_using="gist"),
@@ -63,10 +62,14 @@ class Quarter(Base):
 
     __tablename__ = "quarters"
     __table_args__ = (
-        PrimaryKeyConstraint("subject", "fgis_id", name="quarters_pkey"),
-        Index("ix_quarters_fgis_id", "fgis_id"),
+        PrimaryKeyConstraint("fgis_id", name="quarters_pkey"),
         Index("ix_quarters_subject", "subject"),
         Index("ix_quarters_subject_read_at", "subject", "read_at"),
+        Index(
+            "ix_quarters_subject_clearcut_polled_at",
+            "subject",
+            "clearcut_polled_at",
+        ),
         Index("ix_quarters_geom", "geom", postgresql_using="gist"),
         {"comment": "квартал"},
     )
@@ -97,6 +100,12 @@ class Quarter(Base):
     crs: Mapped[str | None] = mapped_column(
         String(50), comment="система координат СПД"
     )
+    clearcut_polled_at: Mapped[date | None] = mapped_column(
+        Date, comment="дата опроса лесосек"
+    )
+    has_clearcuts: Mapped[bool | None] = mapped_column(
+        Boolean, comment="есть лесосеки"
+    )
 
 
 class Clearcut(Base):
@@ -104,8 +113,7 @@ class Clearcut(Base):
 
     __tablename__ = "clearcut"
     __table_args__ = (
-        PrimaryKeyConstraint("subject", "fgis_id", name="clearcut_pkey"),
-        Index("ix_clearcut_fgis_id", "fgis_id"),
+        PrimaryKeyConstraint("fgis_id", name="clearcut_pkey"),
         Index("ix_clearcut_subject", "subject"),
         Index("ix_clearcut_subject_read_at", "subject", "read_at"),
         Index("ix_clearcut_geom", "geom", postgresql_using="gist"),
@@ -131,6 +139,9 @@ class Clearcut(Base):
     geom: Mapped[object | None] = mapped_column(
         Geometry(geometry_type="GEOMETRY", spatial_index=False),
         comment="контур",
+    )
+    crs: Mapped[str | None] = mapped_column(
+        String(50), comment="система координат СПД"
     )
     limitation_dt: Mapped[str | None] = mapped_column(
         String(20), comment="дата отвода"

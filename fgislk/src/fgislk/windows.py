@@ -73,6 +73,17 @@ def add_month(day: date) -> date:
     return date(year, month, min(day.day, last))
 
 
+def clearcut_full_scan(subject: str, today: date | None = None) -> bool:
+    """Полный обход кварталов субъекта раз в 10 дней (как 1С ОчереднойАудитЛесосек)."""
+    day = (today or moscow_today()).day
+    if day == 31:
+        return False
+    last = day % 10
+    base = 90 if last == 0 else (last - 1) * 10
+    number = int(subject)
+    return base + 1 <= number <= base + 10
+
+
 def all_subjects() -> list[str]:
     return [f"{n:02d}" for n in range(1, 100)]
 
@@ -85,6 +96,12 @@ def normalize_subject(value: str) -> str:
     if number < 1 or number > 99:
         raise ValueError("subject — код 01…99")
     return f"{number:02d}"
+
+
+def subject_from_quarter_id(fgis_id: str) -> str:
+    text = fgis_id.strip()
+    prefix = text.split(":", 1)[0]
+    return normalize_subject(prefix)
 
 
 def parse_subjects(value: str) -> list[str]:
