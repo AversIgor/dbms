@@ -36,7 +36,7 @@ def _from_epoch(raw: int | float) -> date:
 
 
 def _date(value: Any) -> date | None:
-    """modifyDttm СПД: ISO, epoch мс (как в 1С), /Date(ms)/."""
+    """Даты СПД (modifyDttm, limitationDt): ISO, epoch с/мс, /Date(ms)/."""
     if value is None or value == "":
         return None
     if isinstance(value, datetime):
@@ -293,7 +293,7 @@ def clearcut_row_from_payload(
         "area": _area(payload.get("squareNval")),
         "status": _clip(payload.get("status"), 10),
         "actuality_date": _date(payload.get("modifyDttm")),
-        "limitation_dt": _clip(payload.get("limitationDt"), 20),
+        "limitation_dt": _date(payload.get("limitationDt")),
         "clearcut_no": _clip(payload.get("clearcutInDocNo"), 50),
         "basis_doc_no": _clip(payload.get("basisDocNo"), 50),
         "data_kind": KIND_CLEARCUT,

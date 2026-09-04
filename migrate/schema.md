@@ -1,6 +1,6 @@
 # Схема БД (актуальная)
 
-Источник: `alembic/versions/` + `src/migrate/models.py`. Head: `0013_fgis_id_unique`.
+Источник: `alembic/versions/` + `src/migrate/models.py`. Head: `0014_clearcut_limitation_dt`.
 
 ```mermaid
 erDiagram
@@ -46,7 +46,7 @@ erDiagram
     int semantic_id "идентификатор семантики WFS"
     geometry geom "контур, gist"
     varchar crs "система координат СПД"
-    varchar limitation_dt "дата отвода"
+    date limitation_dt "дата отвода"
     varchar clearcut_no "номер лесосеки"
     varchar basis_doc_no "номер документа-основания"
   }
@@ -70,7 +70,7 @@ erDiagram
 | `alembic_version` | текущая revision |
 | `taxation_piece` | выдел: семантика + контур (`0002`) + `read_at` (`0005`) + `actuality_date` (`0006`) + `semantic_id` (`0007`) + `crs` (`0010`) + PK `fgis_id` (`0013`) |
 | `quarters` | квартал: семантика + контур (`0008`) + `crs` (`0010`) + опрос лесосек (`0011`) + PK `fgis_id` (`0013`) |
-| `clearcut` | лесосека: семантика + контур (`0009`) + `crs` (`0012`) + PK `fgis_id` (`0013`) |
+| `clearcut` | лесосека: семантика + контур (`0009`) + `crs` (`0012`) + PK `fgis_id` (`0013`) + `limitation_dt` date (`0014`) |
 | `fgis_import_history` | журнал прогонов fgislk (`0003` + окно `0004_fgis_import_period`) |
 | таблицы PostGIS (`spatial_ref_sys` и др.) | ставит расширение, не описывать в `models.py` |
 

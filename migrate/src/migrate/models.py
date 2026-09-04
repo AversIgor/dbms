@@ -143,8 +143,8 @@ class Clearcut(Base):
     crs: Mapped[str | None] = mapped_column(
         String(50), comment="система координат СПД"
     )
-    limitation_dt: Mapped[str | None] = mapped_column(
-        String(20), comment="дата отвода"
+    limitation_dt: Mapped[date | None] = mapped_column(
+        Date, comment="дата отвода"
     )
     clearcut_no: Mapped[str | None] = mapped_column(
         String(50), comment="номер лесосеки"

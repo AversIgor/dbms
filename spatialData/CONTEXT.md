@@ -52,7 +52,7 @@
 | `semantic_id` | integer | идентификатор семантики (`CLEARCUT.{id}`) |
 | `geom` | geometry | контур |
 | `crs` | varchar(50) | `coordinateSystemCode` СПД |
-| `limitation_dt` | varchar(20) | дата отвода (`limitationDt` СПД) |
+| `limitation_dt` | date | дата отвода (`limitationDt` СПД) |
 | `clearcut_no` | varchar(50) | номер лесосеки |
 | `basis_doc_no` | varchar(50) | номер документа-основания |
 

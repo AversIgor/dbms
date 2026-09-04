@@ -86,6 +86,27 @@
       text-transform: uppercase;
       color: var(--muted);
     }
+    dialog.browser {
+      width: min(96vw, 76rem);
+      max-height: 92vh;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 1rem 1.1rem;
+      background: var(--card);
+      color: var(--ink);
+    }
+    dialog.browser::backdrop { background: rgba(28, 36, 28, 0.45); }
+    .browser-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.5rem;
+    }
+    .browser-head h3 { margin: 0; text-transform: none; letter-spacing: 0; font-size: 1rem; color: var(--ink); }
+    .browser-table-wrap { overflow: auto; max-height: 52vh; }
+    .browser-table-wrap table { margin-top: 0; }
+    th.check, td.check { width: 2rem; text-align: center; }
   </style>
 </head>
 <body>
@@ -139,18 +160,25 @@
       return val;
     }
 
-    function tableHtml(rows, columns, highlight) {
+    function tableHtml(rows, columns, highlight, options) {
       if (!rows || !rows.length) return `<p class="muted">пусто</p>`;
       const cols = columns && columns.length
         ? columns
         : Object.keys(rows[0]).map((k) => ({ name: k, label: k }));
-      const head = cols.map((c) => `<th>${esc(c.label || c.name)}</th>`).join("");
+      const idField = options && options.idField;
+      const selectable = Boolean(idField);
+      const head = (selectable ? `<th class="check"><input type="checkbox" class="pick-all"></th>` : "") +
+        cols.map((c) => `<th>${esc(c.label || c.name)}</th>`).join("");
       const field = highlight && highlight.field;
       const cls = (highlight && highlight.class) || "running";
       const body = rows.map((row) => {
         const on = field ? Boolean(row[field]) : false;
+        const id = idField ? row[idField] : "";
+        const pick = selectable
+          ? `<td class="check"><input type="checkbox" class="pick" value="${esc(id)}"></td>`
+          : "";
         const cells = cols.map((c) => `<td>${esc(cellText(c, row))}</td>`).join("");
-        return `<tr class="${on ? esc(cls) : ""}">${cells}</tr>`;
+        return `<tr class="${on ? esc(cls) : ""}">${pick}${cells}</tr>`;
       }).join("");
       return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
     }
@@ -335,6 +363,207 @@
       });
     }
 
+    function errorText(res) {
+      const err = res.data && (res.data.error || res.data.detail);
+      const text = typeof err === "string" ? err : err ? JSON.stringify(err) : "";
+      return text ? `ошибка ${res.status}: ${text}` : `ошибка ${res.status}`;
+    }
+
+    function mountTableBrowser(wrap, sectionId, table) {
+      const block = document.createElement("div");
+      const openLabel = table.open_label || table.title || "Открыть";
+      block.innerHTML = `<h3>${esc(table.title || table.id)}</h3>
+        <button type="button" class="open-browser">${esc(openLabel)}</button>`;
+      const dlg = document.createElement("dialog");
+      dlg.className = "browser";
+      const tableParam = table.table_param || "table";
+      const fieldParam = table.search_field_param || "field";
+      const qParam = table.search_value_param || "q";
+      const pageParam = table.page_param || "page";
+      const sizeParam = table.size_param || "size";
+      const tableOpts = (table.tables || []).map((opt) => {
+        const v = typeof opt === "object" ? opt.value : opt;
+        const lab = typeof opt === "object" ? (opt.label || v) : opt;
+        return `<option value="${esc(v)}">${esc(lab)}</option>`;
+      }).join("");
+      dlg.innerHTML = `<div class="browser-head">
+          <h3>${esc(table.title || table.id)}</h3>
+          <button type="button" class="close-browser">Закрыть</button>
+        </div>
+        <form class="row browser-form">
+          <label>${esc(table.table_label || "Таблица")}
+            <select name="${esc(tableParam)}" required>
+              <option value="">выберите</option>${tableOpts}
+            </select>
+          </label>
+          <label>Поиск по
+            <select name="${esc(fieldParam)}"></select>
+          </label>
+          <label>Значение
+            <input name="${esc(qParam)}" type="text">
+          </label>
+          <input type="hidden" name="${esc(pageParam)}" value="1">
+          <label>На странице
+            <input name="${esc(sizeParam)}" type="number" value="50" min="1" max="100">
+          </label>
+          <button type="submit">Показать</button>
+          <button type="button" class="prev-page" disabled>←</button>
+          <button type="button" class="next-page" disabled>→</button>
+          <span class="muted page-info"></span>
+        </form>
+        <div class="row">
+          <button type="button" class="del-selected" disabled>Удалить выбранные</button>
+          <button type="button" class="del-matching" disabled>Удалить найденные</button>
+          <span class="muted result"></span>
+        </div>
+        <div class="browser-table-wrap muted">выберите таблицу</div>`;
+      block.appendChild(dlg);
+      wrap.appendChild(block);
+
+      const form = dlg.querySelector("form");
+      const out = dlg.querySelector(".browser-table-wrap");
+      const result = dlg.querySelector(".result");
+      const fieldSelect = form.elements[fieldParam];
+      const state = { total: 0, pages: 1, idField: "", loaded: false };
+
+      function fillFields(fields, current) {
+        const opts = (fields || []).map((col) => {
+          const name = col.name || col;
+          const lab = col.label || name;
+          const sel = String(current || "") === String(name) ? "selected" : "";
+          return `<option value="${esc(name)}" ${sel}>${esc(lab)}</option>`;
+        }).join("");
+        fieldSelect.innerHTML = opts;
+      }
+
+      function syncPager() {
+        const page = Number(form.elements[pageParam].value || 1);
+        dlg.querySelector(".prev-page").disabled = !state.loaded || page <= 1;
+        dlg.querySelector(".next-page").disabled = !state.loaded || page >= state.pages;
+        dlg.querySelector(".page-info").textContent = state.loaded
+          ? `${page} / ${state.pages}, всего ${state.total}`
+          : "";
+        const q = String(form.elements[qParam].value || "").trim();
+        dlg.querySelector(".del-matching").disabled = !state.loaded || !q || !state.total;
+        dlg.querySelector(".del-selected").disabled = true;
+      }
+
+      function bindPicks() {
+        const all = out.querySelector(".pick-all");
+        const picks = () => [...out.querySelectorAll(".pick")];
+        const refreshDel = () => {
+          dlg.querySelector(".del-selected").disabled = !picks().some((el) => el.checked);
+        };
+        if (all) {
+          all.addEventListener("change", () => {
+            picks().forEach((el) => { el.checked = all.checked; });
+            refreshDel();
+          });
+        }
+        picks().forEach((el) => el.addEventListener("change", refreshDel));
+        refreshDel();
+      }
+
+      async function load() {
+        const tableName = String(form.elements[tableParam].value || "").trim();
+        if (!tableName) {
+          result.textContent = "выберите таблицу";
+          return;
+        }
+        const params = new URLSearchParams();
+        params.set(tableParam, tableName);
+        const field = String(form.elements[fieldParam].value || "").trim();
+        const q = String(form.elements[qParam].value || "").trim();
+        if (q) {
+          if (field) params.set(fieldParam, field);
+          params.set(qParam, q);
+        }
+        params.set(pageParam, String(form.elements[pageParam].value || "1"));
+        params.set(sizeParam, String(form.elements[sizeParam].value || "50"));
+        out.classList.add("muted");
+        out.textContent = "загрузка";
+        const res = await fetchJson(`/p/${sectionId}${table.path}?${params}`);
+        if (!res.ok) {
+          state.loaded = false;
+          out.textContent = errorText(res);
+          syncPager();
+          return;
+        }
+        const data = res.data || {};
+        fillFields(data.search_fields || data.columns, data.field || field);
+        state.total = Number(data.total || 0);
+        state.pages = Number(data.pages || 1);
+        state.idField = data.id_field || "";
+        state.loaded = true;
+        if (data.page) form.elements[pageParam].value = data.page;
+        out.classList.remove("muted");
+        out.innerHTML = tableHtml(data.rows || [], data.columns, null, { idField: state.idField });
+        bindPicks();
+        syncPager();
+        result.textContent = "";
+      }
+
+      async function sendDelete(payload) {
+        const spec = table.delete || {};
+        const path = spec.path || `${table.path}/delete`;
+        const method = (spec.method || "POST").toUpperCase();
+        result.textContent = "…";
+        const res = await fetchJson(`/p/${sectionId}${path}`, {
+          method,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          result.textContent = errorText(res);
+          return;
+        }
+        const n = res.data && res.data.deleted != null ? res.data.deleted : "";
+        result.textContent = n === "" ? `ok ${res.status}` : `удалено ${n}`;
+        await load();
+      }
+
+      block.querySelector(".open-browser").addEventListener("click", () => dlg.showModal());
+      dlg.querySelector(".close-browser").addEventListener("click", () => dlg.close());
+      form.addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        form.elements[pageParam].value = "1";
+        load();
+      });
+      form.elements[tableParam].addEventListener("change", () => {
+        fillFields([]);
+        form.elements[pageParam].value = "1";
+        form.elements[qParam].value = "";
+        load();
+      });
+      dlg.querySelector(".prev-page").addEventListener("click", () => {
+        const page = Math.max(1, Number(form.elements[pageParam].value || 1) - 1);
+        form.elements[pageParam].value = String(page);
+        load();
+      });
+      dlg.querySelector(".next-page").addEventListener("click", () => {
+        const page = Number(form.elements[pageParam].value || 1) + 1;
+        form.elements[pageParam].value = String(page);
+        load();
+      });
+      dlg.querySelector(".del-selected").addEventListener("click", () => {
+        const ids = [...out.querySelectorAll(".pick:checked")].map((el) => el.value);
+        if (!ids.length) return;
+        if (!window.confirm(`Удалить выбранные записи (${ids.length})?`)) return;
+        sendDelete({ table: form.elements[tableParam].value, ids });
+      });
+      dlg.querySelector(".del-matching").addEventListener("click", () => {
+        const q = String(form.elements[qParam].value || "").trim();
+        if (!q || !state.total) return;
+        if (!window.confirm(`Удалить все найденные записи (${state.total})?`)) return;
+        sendDelete({
+          table: form.elements[tableParam].value,
+          field: form.elements[fieldParam].value,
+          q,
+          all_matching: true,
+        });
+      });
+    }
+
     function mountTables(card, sectionId, panel) {
       const wrap = card.querySelector(".tables");
       if (!panel.tables || !panel.tables.length) {
@@ -343,6 +572,10 @@
       }
       wrap.innerHTML = "";
       panel.tables.forEach((table) => {
+        if (table.kind === "browser") {
+          mountTableBrowser(wrap, sectionId, table);
+          return;
+        }
         const block = document.createElement("div");
         const heading = table.title ? `<h3>${esc(table.title)}</h3>` : "";
         block.innerHTML = heading;

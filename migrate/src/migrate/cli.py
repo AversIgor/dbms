@@ -40,7 +40,7 @@ def history() -> None:
 @click.option("--host", default="0.0.0.0", show_default=True)
 @click.option("--port", type=int, default=None)
 def serve(do_upgrade: bool, host: str, port: int | None) -> None:
-    """HTTP после upgrade: /health /ready /status /panel (без страницы в браузере)."""
+    """HTTP после upgrade: /health /ready /status /panel /rows (без страницы в браузере)."""
     if do_upgrade:
         run_upgrade()
     if port is None:

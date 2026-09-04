@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 
-REQUIRED_SCHEMA = "0013_fgis_id_unique"
+REQUIRED_SCHEMA = "0014_clearcut_limitation_dt"
 KIND_QUARTERS = "quarters"
 KIND_TAXATION_PIECE = "taxation_piece"
 KIND_CLEARCUT = "clearcut"
