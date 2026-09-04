@@ -550,6 +550,13 @@ class SpdClient:
             return ids_from_payload(data["payload"])
         return []
 
+    async def _clearcut_ids_or_none(self, quarter_fgis_id: str) -> list[str] | None:
+        try:
+            return await self.clearcut_ids_by_quarter(quarter_fgis_id)
+        except SpdError as exc:
+            log.warning("список лесосек квартала %s: %s", quarter_fgis_id, exc)
+            return None
+
     async def clearcut_ids_by_quarter(self, quarter_fgis_id: str) -> list[str]:
         try:
             data = await self._get(f"clearcut/get-no-by-quarter/{quarter_fgis_id}")
@@ -561,6 +568,89 @@ class SpdClient:
             return ids_from_clearcut_list(data)
         except TypeError as exc:
             raise SpdError(str(exc)) from exc
+
+    async def clearcut_ids_by_quarters(
+        self, quarter_ids: Sequence[str]
+    ) -> list[list[str] | None]:
+        """Пачка списков: один curl на пачку (`next`); нет лесосек — []. Сбой квартала — None."""
+        qids = list(quarter_ids)
+        if not qids:
+            return []
+        if not self._curl:
+            return list(
+                await asyncio.gather(
+                    *[self._clearcut_ids_or_none(qid) for qid in qids]
+                )
+            )
+        urls = [
+            self._url(f"clearcut/get-no-by-quarter/{qid}") for qid in qids
+        ]
+        parsed: list[tuple[int, str]] | None = None
+        last_error: Exception | None = None
+        for _attempt in range(_RETRY_ATTEMPTS):
+            try:
+                parsed = await self._curl_exec(urls)
+                break
+            except SpdError as exc:
+                last_error = exc
+                log.warning("пачка списков лесосек СПД: %s", exc)
+        if parsed is None:
+            log.warning(
+                "пачка %s списков лесосек недоступна, по одному: %s",
+                len(qids),
+                last_error,
+            )
+            return list(
+                await asyncio.gather(
+                    *[self._clearcut_ids_or_none(qid) for qid in qids]
+                )
+            )
+        out, retry_ids, retry_at = await asyncio.to_thread(
+            _clearcut_lists_from_parsed, parsed, qids
+        )
+        if retry_ids:
+            recovered = await asyncio.gather(
+                *[self._clearcut_ids_or_none(qid) for qid in retry_ids]
+            )
+            for index, ids in zip(retry_at, recovered, strict=True):
+                out[index] = ids
+        return out
+
+
+def _clearcut_lists_from_parsed(
+    parsed: list[tuple[int, str]], qids: list[str]
+) -> tuple[list[list[str] | None], list[str], list[int]]:
+    out: list[list[str] | None] = []
+    retry_ids: list[str] = []
+    retry_at: list[int] = []
+    for index, (status, body) in enumerate(parsed):
+        kind, ids = _clearcut_list_from_status(status, body)
+        if kind == "retry":
+            retry_at.append(index)
+            retry_ids.append(qids[index])
+            out.append(None)
+        else:
+            out.append(ids)
+    return out, retry_ids, retry_at
+
+
+def _clearcut_list_from_status(
+    status: int, body: str
+) -> tuple[str, list[str] | None]:
+    if "PIL_CLEARCUT0012" in body:
+        return "ok", []
+    if status >= 500 or status == 0:
+        return "retry", None
+    if status >= 400:
+        return "fail", None
+    try:
+        data = json.loads(body) if body.strip() else {}
+    except json.JSONDecodeError:
+        return "retry", None
+    try:
+        return "ok", ids_from_clearcut_list(data)
+    except TypeError:
+        return "fail", None
 
 
 def _cards_from_parsed(

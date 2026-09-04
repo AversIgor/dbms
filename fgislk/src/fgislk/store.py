@@ -277,8 +277,14 @@ def quarters_for_clearcut(
     period_start: date | None,
     quarter_id: str | None = None,
     full_scan: bool = False,
+    today: date | None = None,
 ) -> list[str]:
     params: dict[str, Any] = {"subject": subject}
+    not_today = (
+        " AND (clearcut_polled_at IS NULL OR clearcut_polled_at < :today)"
+    )
+    if today is not None:
+        params["today"] = today
     if quarter_id:
         sql = """
             SELECT fgis_id FROM quarters
@@ -286,23 +292,26 @@ def quarters_for_clearcut(
             """
         params["qid"] = quarter_id
     elif audit:
-        sql = """
+        sql = f"""
             SELECT fgis_id FROM quarters
             WHERE subject = :subject
               AND (clearcut_polled_at IS NULL OR clearcut_polled_at < :start)
+              {not_today if today is not None else ""}
             ORDER BY fgis_id
             """
         params["start"] = period_start
     elif full_scan:
-        sql = """
+        sql = f"""
             SELECT fgis_id FROM quarters
             WHERE subject = :subject
+              {not_today if today is not None else ""}
             ORDER BY fgis_id
             """
     else:
-        sql = """
+        sql = f"""
             SELECT fgis_id FROM quarters
             WHERE subject = :subject AND has_clearcuts
+              {not_today if today is not None else ""}
             ORDER BY fgis_id
             """
     rows = conn.execute(text(sql), params)
@@ -317,21 +326,64 @@ def stamp_clearcut_poll(
     polled_at: date,
     has_clearcuts: bool,
 ) -> None:
-    conn.execute(
+    stamp_clearcut_polls(
+        conn,
+        subject,
+        [quarter_id],
+        polled_at=polled_at,
+        has_clearcuts=has_clearcuts,
+    )
+
+
+def stamp_clearcut_polls(
+    conn: Connection,
+    subject: str,
+    quarter_ids: Sequence[str],
+    *,
+    polled_at: date,
+    has_clearcuts: bool,
+) -> None:
+    if not quarter_ids:
+        return
+    sql = text(
+        """
+        UPDATE quarters
+        SET clearcut_polled_at = :polled_at, has_clearcuts = :has_clearcuts
+        WHERE subject = :subject AND fgis_id IN :qids
+        """
+    ).bindparams(bindparam("qids", expanding=True))
+    unique = list(dict.fromkeys(quarter_ids))
+    for offset in range(0, len(unique), _RECENT_ID_CHUNK):
+        chunk = unique[offset : offset + _RECENT_ID_CHUNK]
+        conn.execute(
+            sql,
+            {
+                "subject": subject,
+                "qids": chunk,
+                "polled_at": polled_at,
+                "has_clearcuts": has_clearcuts,
+            },
+        )
+
+
+def recent_read_ids_subject(
+    conn: Connection,
+    subject: str,
+    since: date,
+    *,
+    data_kind: str,
+) -> set[str]:
+    table = KIND_TABLE[data_kind]
+    rows = conn.execute(
         text(
-            """
-            UPDATE quarters
-            SET clearcut_polled_at = :polled_at, has_clearcuts = :has_clearcuts
-            WHERE subject = :subject AND fgis_id = :qid
+            f"""
+            SELECT fgis_id FROM {table}
+            WHERE subject = :subject AND read_at >= :since
             """
         ),
-        {
-            "subject": subject,
-            "qid": quarter_id,
-            "polled_at": polled_at,
-            "has_clearcuts": has_clearcuts,
-        },
+        {"subject": subject, "since": since},
     )
+    return {str(row[0]) for row in rows}
 
 
 def recent_read_ids(
@@ -519,7 +571,9 @@ def _live_row(job: dict[str, Any], last: dict[str, Any] | None) -> dict[str, Any
         ),
         "in_progress": True,
         "mode": job.get("mode"),
-        "progress": progress_label(updated, job.get("changed_total")),
+        "progress": progress_label(
+            job.get("progress_count", updated), job.get("changed_total")
+        ),
     }
     if job.get("changed_total") is not None:
         item["changed_total"] = job["changed_total"]

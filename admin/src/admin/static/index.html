@@ -6,117 +6,208 @@
   <title>Разделы — admin</title>
   <style>
     :root {
-      --bg: #f4f1ea;
-      --ink: #1c241c;
-      --muted: #5c6758;
-      --card: #fffdf8;
-      --line: #d5d0c4;
-      --ok: #2f6b3a;
-      --ok-bg: #e4f0e4;
-      --bad: #8b2e2e;
-      --bad-bg: #f6e4e4;
-      --wait: #6b5a2f;
-      --wait-bg: #f3ecd8;
+      --bg: #ececec;
+      --ink: #1a1a1a;
+      --muted: #6a6a6a;
+      --card: #ffffff;
+      --line: #b8b8b8;
+      --bar: #ffc000;
+      --bar-edge: #e0a800;
+      --cmd: #f3f3f3;
+      --ok: #2d6a32;
+      --ok-bg: #e3f0d8;
+      --bad: #a33;
+      --bad-bg: #f5d6d6;
+      --wait: #7a5c12;
+      --wait-bg: #ffe9a8;
+      --sel: #fff4c2;
     }
     * { box-sizing: border-box; }
+    html, body { height: 100%; }
     body {
       margin: 0;
-      font: 16px/1.45 "Segoe UI", system-ui, sans-serif;
+      font: 13px/1.35 Tahoma, "Segoe UI", sans-serif;
       color: var(--ink);
       background: var(--bg);
     }
-    header {
-      padding: 1.25rem 1.5rem;
-      border-bottom: 1px solid var(--line);
-      background: var(--card);
+    .shell { display: flex; flex-direction: column; height: 100%; }
+    .taxi-bar {
+      display: flex;
+      align-items: baseline;
+      gap: 0.75rem;
+      padding: 0.35rem 0.7rem 0.4rem;
+      background: linear-gradient(#ffd54a, var(--bar));
+      border-bottom: 1px solid var(--bar-edge);
     }
-    h1 { margin: 0; font-size: 1.15rem; font-weight: 650; }
-    header p { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.9rem; }
-    main { padding: 1.5rem; display: grid; gap: 1rem; }
+    h1 { margin: 0; font-size: 14px; font-weight: 700; }
+    .taxi-bar p { margin: 0; color: #5a4a10; font-size: 12px; }
+    .taxi-cmd {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 6px;
+      background: var(--cmd);
+      border-bottom: 1px solid var(--line);
+      min-height: 28px;
+    }
+    .taxi-cmd span { color: var(--muted); font-size: 12px; }
+    .workspace { display: flex; flex: 1; min-height: 0; }
+    nav.nav {
+      width: 220px;
+      flex-shrink: 0;
+      background: var(--card);
+      border-right: 1px solid var(--line);
+      overflow: auto;
+    }
+    nav.nav button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      border: 0;
+      border-bottom: 1px solid #e8e8e8;
+      background: transparent;
+      padding: 7px 10px;
+      border-radius: 0;
+    }
+    nav.nav button.on {
+      background: var(--sel);
+      box-shadow: inset 3px 0 0 var(--bar-edge);
+      font-weight: 700;
+    }
+    main { flex: 1; overflow: auto; padding: 0; background: var(--bg); }
     section.card {
       background: var(--card);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 1rem 1.1rem;
+      border: 0;
+      min-height: 100%;
     }
     section.card h2 {
-      margin: 0 0 0.6rem;
-      font-size: 1.05rem;
+      margin: 0;
+      padding: 6px 10px;
+      font-size: 13px;
+      font-weight: 700;
+      background: linear-gradient(#ffe27a, var(--bar));
+      border-bottom: 1px solid var(--bar-edge);
     }
+    .card-body { padding: 8px 10px 12px; }
     .pill {
       display: inline-block;
-      padding: 0.1rem 0.5rem;
-      border-radius: 999px;
-      font-size: 0.85rem;
+      padding: 0 5px;
       margin-left: 0.4rem;
+      font-size: 11px;
+      font-weight: 400;
+      border: 1px solid var(--line);
+      background: var(--cmd);
     }
-    .ok { background: var(--ok-bg); color: var(--ok); }
-    .bad { background: var(--bad-bg); color: var(--bad); }
-    .wait { background: var(--wait-bg); color: var(--wait); }
-    .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end; margin: 0.5rem 0; }
-    label { font-size: 0.8rem; color: var(--muted); display: flex; flex-direction: column; gap: 0.15rem; }
-    label.check { flex-direction: row; align-items: center; gap: 0.35rem; white-space: nowrap; }
+    .ok { background: var(--ok-bg); color: var(--ok); border-color: #9cba7a; }
+    .bad { background: var(--bad-bg); color: var(--bad); border-color: #d09090; }
+    .wait { background: var(--wait-bg); color: var(--wait); border-color: var(--bar-edge); }
+    .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; margin: 6px 0; }
+    label { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
+    label.check { flex-direction: row; align-items: center; gap: 0.35rem; white-space: nowrap; color: var(--ink); }
     input, button, select {
       font: inherit;
-      padding: 0.25rem 0.5rem;
+      padding: 2px 7px;
+      border: 1px solid #8f8f8f;
+      border-radius: 0;
+      background: var(--card);
     }
-    button { cursor: pointer; }
+    button {
+      cursor: pointer;
+      background: linear-gradient(#fafafa, #e6e6e6);
+    }
+    button:hover:not(:disabled) { background: linear-gradient(#fff, #eee); }
     button:disabled { cursor: default; opacity: 0.45; }
-    table { border-collapse: collapse; width: 100%; font-size: 0.85rem; margin-top: 0.4rem; }
-    th, td { border: 1px solid var(--line); padding: 0.25rem 0.4rem; text-align: left; vertical-align: top; word-break: break-word; white-space: pre-wrap; }
+    table { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 4px; }
+    th, td {
+      border: 1px solid #c9c9c9;
+      padding: 2px 6px;
+      text-align: left;
+      vertical-align: top;
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+    th { background: #f4f4f4; font-weight: 700; }
+    tbody tr:nth-child(even) { background: #fafafa; }
+    tbody tr:hover { background: #fff8dc; }
     span.result { max-width: 42rem; word-break: break-word; }
-    tr.running { background: var(--ok-bg); }
-    .pager { display: flex; align-items: center; gap: 0.35rem; }
+    tr.running { background: var(--sel) !important; }
+    .pager { display: flex; align-items: center; gap: 4px; }
     pre {
       margin: 0.5rem 0 0;
-      padding: 0.6rem 0.7rem;
+      padding: 6px 8px;
       background: var(--bg);
       border: 1px solid var(--line);
-      border-radius: 6px;
       overflow: auto;
-      font-size: 0.75rem;
+      font-size: 11px;
       max-height: 16rem;
     }
-    .muted { color: var(--muted); font-size: 0.9rem; }
-    .block { margin-top: 0.9rem; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .block { margin-top: 10px; }
     .block h3 {
-      margin: 0 0 0.35rem;
-      font-size: 0.75rem;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      color: var(--muted);
+      margin: 0 0 4px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--ink);
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 2px;
     }
     dialog.browser {
       width: min(96vw, 76rem);
       max-height: 92vh;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 1rem 1.1rem;
+      border: 1px solid #7a7a7a;
+      padding: 0;
       background: var(--card);
       color: var(--ink);
     }
-    dialog.browser::backdrop { background: rgba(28, 36, 28, 0.45); }
+    dialog.browser::backdrop { background: rgba(40, 40, 40, 0.35); }
     .browser-head {
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 0.75rem;
-      margin-bottom: 0.5rem;
+      padding: 5px 8px;
+      background: linear-gradient(#ffe27a, var(--bar));
+      border-bottom: 1px solid var(--bar-edge);
     }
-    .browser-head h3 { margin: 0; text-transform: none; letter-spacing: 0; font-size: 1rem; color: var(--ink); }
-    .browser-table-wrap { overflow: auto; max-height: 52vh; }
+    .browser-head h3 { margin: 0; font-size: 13px; color: var(--ink); }
+    .browser-form, .browser > .row { padding: 6px 8px; margin: 0; }
+    .browser-table-wrap { overflow: auto; max-height: 52vh; margin: 0 8px 8px; }
     .browser-table-wrap table { margin-top: 0; }
     th.check, td.check { width: 2rem; text-align: center; }
+    footer.taxi-status {
+      padding: 2px 8px;
+      font-size: 12px;
+      background: var(--cmd);
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+    }
   </style>
 </head>
 <body>
-  <header>
-    <h1>Разделы системы</h1>
-    <p>Витрина HTTP процессов.</p>
-  </header>
-  <main id="root"></main>
+  <div class="shell">
+    <header class="taxi-bar">
+      <h1>Разделы системы</h1>
+      <p>Витрина HTTP процессов</p>
+    </header>
+    <div class="taxi-cmd"><span>Разделы</span></div>
+    <div class="workspace">
+      <nav id="nav" class="nav"></nav>
+      <main id="root"></main>
+    </div>
+    <footer class="taxi-status">Готово</footer>
+  </div>
   <script>
     const root = document.getElementById("root");
+    const nav = document.getElementById("nav");
+
+    function setActive(id) {
+      document.querySelectorAll("#nav button").forEach((b) => {
+        b.classList.toggle("on", b.dataset.id === id);
+      });
+      document.querySelectorAll("#root > .card").forEach((el) => {
+        el.hidden = el.dataset.id !== id;
+      });
+    }
 
     function pill(ok, text) {
       const cls = ok === true ? "ok" : ok === false ? "bad" : "wait";
@@ -211,8 +302,9 @@
     function renderStub(section) {
       const el = document.createElement("section");
       el.className = "card";
+      el.dataset.id = section.id;
       el.innerHTML = `<h2>${esc(section.title)} ${pill(null, "нет HTTP")}</h2>
-        <p class="muted">${esc(section.stub || "")}</p>`;
+        <div class="card-body"><p class="muted">${esc(section.stub || "")}</p></div>`;
       return el;
     }
 
@@ -221,9 +313,11 @@
       el.className = "card";
       el.dataset.id = section.id;
       el.innerHTML = `<h2>${esc(section.title)} ${pill(null, "…")}</h2>
-        <div class="status muted">загрузка</div>
-        <div class="actions block"></div>
-        <div class="tables block"></div>`;
+        <div class="card-body">
+          <div class="status muted">загрузка</div>
+          <div class="actions block"></div>
+          <div class="tables block"></div>
+        </div>`;
       return el;
     }
 
@@ -607,8 +701,17 @@
     async function boot() {
       const cat = await fetchJson("/catalog");
       const sections = (cat.data && cat.data.sections) || [];
+      nav.innerHTML = "";
       root.innerHTML = "";
+      let firstId = null;
       for (const section of sections) {
+        if (!firstId) firstId = section.id;
+        const item = document.createElement("button");
+        item.type = "button";
+        item.dataset.id = section.id;
+        item.textContent = section.title;
+        item.addEventListener("click", () => setActive(section.id));
+        nav.appendChild(item);
         if (!section.has_http) {
           root.appendChild(renderStub(section));
           continue;
@@ -630,6 +733,7 @@
         await refreshStatus(card, section.id, panel);
         setInterval(() => refreshStatus(card, section.id, panel), 5000);
       }
+      if (firstId) setActive(firstId);
     }
 
     boot();

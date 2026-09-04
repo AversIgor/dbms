@@ -26,7 +26,9 @@ from fgislk.store import (
     last_ok_day,
     quarters_for_clearcut,
     recent_read_ids,
+    recent_read_ids_subject,
     stamp_clearcut_poll,
+    stamp_clearcut_polls,
     try_lock_subject,
     unlock_subject,
     upsert_clearcuts,
@@ -359,84 +361,150 @@ async def _import_clearcuts(
             and not quarter_id
             and clearcut_full_scan(subject, read_at)
         ),
+        today=None if quarter_id else read_at,
     )
     total = len(queue)
     upserted = 0
     processed = 0
     await running.update(
-        subject, updated_count=0, changed_total=total
+        subject, updated_count=0, changed_total=total, progress_count=0
     )
     db_lock = asyncio.Lock()
-    inner = asyncio.Semaphore(batch_workers())
     since = fresh_since or audit_read_since(read_at)
+    fresh: set[str] = set()
+    if skip_fresh:
+        fresh = recent_read_ids_subject(
+            conn, subject, since, data_kind=KIND_CLEARCUT
+        )
+    cursor = 0
+    cursor_lock = asyncio.Lock()
+    n_chunks = (total + FLUSH_BATCH - 1) // FLUSH_BATCH if total else 0
+    n_workers = min(batch_workers(), n_chunks) if n_chunks else 0
 
-    async def one_quarter(qid: str) -> None:
+    async def mark_progress(n_cards: int, n_quarters: int) -> None:
         nonlocal upserted, processed
-        async with inner:
+        upserted += n_cards
+        prev = processed
+        processed += n_quarters
+        await running.update(
+            subject, updated_count=upserted, progress_count=processed
+        )
+        if (
+            audit
+            and n_quarters
+            and processed // FLUSH_BATCH > prev // FLUSH_BATCH
+        ):
+            write_history(
+                conn,
+                subject=subject,
+                day=history_day,
+                result="partial",
+                updated_count=upserted,
+                error=None,
+                data_kind=KIND_CLEARCUT,
+                period_start=start,
+                period_end=end,
+            )
+
+    async def fetch_quarter_cards(qid: str, ids: list[str]) -> int | None:
+        to_fetch = ids
+        skipped = 0
+        if skip_fresh and ids:
+            to_fetch = [fgis_id for fgis_id in ids if fgis_id not in fresh]
+            skipped = len(ids) - len(to_fetch)
+        n = skipped
+        missing = False
+        fetched: list[str] = []
+        for offset in range(0, len(to_fetch), FLUSH_BATCH):
             if not running.same_gen(gen) or running.halted():
                 raise asyncio.CancelledError
-            try:
-                ids = await spd.clearcut_ids_by_quarter(qid)
-            except SpdError as exc:
-                log.warning("список лесосек квартала %s: %s", qid, exc)
-                return
-            to_fetch = ids
-            skipped = 0
-            async with db_lock:
-                if skip_fresh and ids:
-                    fresh = recent_read_ids(
-                        conn, subject, since, ids, data_kind=KIND_CLEARCUT
+            chunk = to_fetch[offset : offset + FLUSH_BATCH]
+            payloads: list[dict[str, Any] | None] | None = None
+            for attempt in range(3):
+                try:
+                    payloads = await spd.cards(
+                        chunk,
+                        resource=SPD_RESOURCE[KIND_CLEARCUT],
+                        need_area=need_area,
                     )
-                    to_fetch = [fgis_id for fgis_id in ids if fgis_id not in fresh]
-                    skipped = len(ids) - len(to_fetch)
-            n = skipped
-            missing = False
-            for offset in range(0, len(to_fetch), FLUSH_BATCH):
+                    break
+                except SpdError:
+                    log.warning(
+                        "карточки лесосек субъекта %s квартал %s, попытка %s",
+                        subject,
+                        qid,
+                        attempt + 1,
+                    )
+            if payloads is None:
+                missing = True
+                break
+            if any(item is None for item in payloads):
+                log.warning(
+                    "квартал %s: часть карточек лесосек без ответа", qid
+                )
+                missing = True
+            rows = await asyncio.to_thread(
+                _rows_from_payloads,
+                KIND_CLEARCUT,
+                subject,
+                chunk,
+                payloads,
+                read_at,
+            )
+            async with db_lock:
                 if not running.same_gen(gen) or running.halted():
                     raise asyncio.CancelledError
-                chunk = to_fetch[offset : offset + FLUSH_BATCH]
-                payloads: list[dict[str, Any] | None] | None = None
-                for attempt in range(3):
-                    try:
-                        payloads = await spd.cards(
-                            chunk,
-                            resource=SPD_RESOURCE[KIND_CLEARCUT],
-                            need_area=need_area,
-                        )
-                        break
-                    except SpdError:
-                        log.warning(
-                            "карточки лесосек субъекта %s квартал %s, попытка %s",
-                            subject,
-                            qid,
-                            attempt + 1,
-                        )
-                if payloads is None:
-                    missing = True
-                    break
-                if any(item is None for item in payloads):
-                    log.warning(
-                        "квартал %s: часть карточек лесосек без ответа", qid
-                    )
-                    missing = True
-                rows = await asyncio.to_thread(
-                    _rows_from_payloads,
-                    KIND_CLEARCUT,
-                    subject,
-                    chunk,
-                    payloads,
-                    read_at,
-                )
+                if rows:
+                    upsert_clearcuts(conn, rows)
+                    fetched.extend(row["fgis_id"] for row in rows)
+                n += len(rows)
+                conn.commit()
+        if missing:
+            log.warning("квартал %s: не все карточки лесосек", qid)
+            return None
+        if fetched:
+            fresh.update(fetched)
+        return n
+
+    async def process_chunk(qids: list[str]) -> None:
+        if not running.same_gen(gen) or running.halted():
+            raise asyncio.CancelledError
+        lists = await spd.clearcut_ids_by_quarters(qids)
+        empty: list[str] = []
+        filled: list[tuple[str, list[str]]] = []
+        for qid, ids in zip(qids, lists, strict=True):
+            if ids is None:
+                log.warning("список лесосек квартала %s: нет ответа", qid)
                 async with db_lock:
                     if not running.same_gen(gen) or running.halted():
                         raise asyncio.CancelledError
-                    if rows:
-                        upsert_clearcuts(conn, rows)
-                    n += len(rows)
-                    conn.commit()
-            if missing:
-                log.warning("квартал %s: не все карточки лесосек", qid)
-                return
+                    await mark_progress(0, 1)
+                continue
+            if ids:
+                filled.append((qid, ids))
+            else:
+                empty.append(qid)
+        if empty:
+            async with db_lock:
+                if not running.same_gen(gen) or running.halted():
+                    raise asyncio.CancelledError
+                stamp_clearcut_polls(
+                    conn,
+                    subject,
+                    empty,
+                    polled_at=read_at,
+                    has_clearcuts=False,
+                )
+                conn.commit()
+                await mark_progress(0, len(empty))
+        for qid, ids in filled:
+            n = await fetch_quarter_cards(qid, ids)
+            if n is None:
+                async with db_lock:
+                    if not running.same_gen(gen) or running.halted():
+                        raise asyncio.CancelledError
+                    await mark_progress(0, 1)
+                continue
             async with db_lock:
                 if not running.same_gen(gen) or running.halted():
                     raise asyncio.CancelledError
@@ -445,27 +513,27 @@ async def _import_clearcuts(
                     subject,
                     qid,
                     polled_at=read_at,
-                    has_clearcuts=bool(ids),
+                    has_clearcuts=True,
                 )
                 conn.commit()
-                upserted += n
-                processed += 1
-                await running.update(subject, updated_count=upserted)
-                if audit and processed % FLUSH_BATCH == 0:
-                    write_history(
-                        conn,
-                        subject=subject,
-                        day=history_day,
-                        result="partial",
-                        updated_count=upserted,
-                        error=None,
-                        data_kind=KIND_CLEARCUT,
-                        period_start=start,
-                        period_end=end,
-                    )
+                await mark_progress(n, 1)
 
-    await asyncio.gather(*[one_quarter(qid) for qid in queue])
-    await running.update(subject, updated_count=upserted)
+    async def worker() -> None:
+        nonlocal cursor
+        while True:
+            async with cursor_lock:
+                if cursor >= total:
+                    return
+                start_at = cursor
+                cursor += FLUSH_BATCH
+                chunk = queue[start_at:cursor]
+            await process_chunk(chunk)
+
+    if n_workers:
+        await asyncio.gather(*[worker() for _ in range(n_workers)])
+    await running.update(
+        subject, updated_count=upserted, progress_count=processed
+    )
     return upserted
 
 
