@@ -83,12 +83,6 @@ def panel_manifest() -> dict:
                         "label": "С даты",
                     },
                     {
-                        "name": "taxation_piece",
-                        "type": "checkbox",
-                        "optional": True,
-                        "label": "выделы",
-                    },
-                    {
                         "name": "quarters",
                         "type": "checkbox",
                         "optional": True,
@@ -99,6 +93,12 @@ def panel_manifest() -> dict:
                         "type": "checkbox",
                         "optional": True,
                         "label": "лесосеки",
+                    },
+                    {
+                        "name": "taxation_piece",
+                        "type": "checkbox",
+                        "optional": True,
+                        "label": "выделы",
                     },
                     {
                         "name": "area",

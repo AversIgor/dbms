@@ -6,51 +6,76 @@
 
 Настройки БД — только в `.env` (шаблон `.env.example`, в git не попадает). Compose и `migrate` читают их оттуда.
 
-## Запуск и остановка
+## Процессы и режимы
+
+Порядок всегда один: Postgres → `migrate` (`/ready` = 200) → `api` и `fgislk` → `admin`. `fgislk` и `api` до 200 на migrate не стартовать (SchemaMismatch). `admin` в БД не ходит.
+
+| Процесс | Порт (пример `.env`) | Обычный режим |
+| --- | --- | --- |
+| `db` | `POSTGRES_PORT` 5433 | Compose |
+| `migrate` | `MIGRATE_PORT` 8080 | Compose |
+| `api` | `API_PORT` 8083 | Compose |
+| `admin` | `ADMIN_PORT` 8082 | Compose |
+| `fgislk` | `FGISLK_PORT` 8081 | **хост**, не контейнер |
+
+Профиль Compose `container` для `fgislk` не включать: Linux-OpenSSL к СПД handshake не проходит. Windows: `FGIS_TLS=schannel` и `.\fgislk\run.ps1`. Ubuntu: `FGIS_TLS=openssl` + gost-engine на хосте (ниже).
+
+На Windows `api` и `admin` можно вместо контейнера: `.\api\run.ps1`, `.\admin\run.ps1` — тогда те же порты в Compose не должны быть заняты (не поднимать эти сервисы или сменить порты). Два процесса на один порт не запускать.
+
+Витрина: [http://127.0.0.1:8082/](http://127.0.0.1:8082/).
+
+## Windows: остановка, запуск, перезапуск
 
 Из корня репозитория. Первый раз: `copy .env.example .env`.
 
-Поднимаются БД (`db`, порт из `POSTGRES_PORT`, в примере 5433), `migrate` (`MIGRATE_PORT`, 8080) и `admin` (`ADMIN_PORT`, 8082). Импорт выделов — на **Windows-хосте** (`FGIS_TLS=schannel`; Linux-контейнер OpenSSL к порталу handshake не проходит): `powershell.exe -File ./fgislk/run.ps1` (порт 8081). Закрыть окно терминала недостаточно: процесс на порту остаётся.
+Закрыть окно терминала недостаточно: процесс на порту остаётся.
 
-Витрина (статус, команды, журнал, настройки): [http://127.0.0.1:8082/](http://127.0.0.1:8082/). Витрина на хосте вместо Compose: `.\admin\run.ps1`.
-
-Полная остановка контейнеров, процессов на хосте и БД (том `pgdata` с данными сохраняется):
+Полная остановка (том `pgdata` с данными сохраняется):
 
 ```powershell
-# остановить контейнеры db / migrate / admin (данные Postgres в томе остаются)
+# остановить контейнеры db / migrate / api / admin (данные Postgres в томе остаются)
 docker compose down
-# закрыть процессы на портах Windows: 8080 migrate, 8081 fgislk, 8082 admin, 5433 БД
-foreach ($port in 8080, 8081, 8082, 5433) {
+# закрыть процессы на хосте: 8080 migrate, 8081 fgislk, 8082 admin, 8083 api, 5433 БД
+foreach ($port in 8080, 8081, 8082, 8083, 5433) {
   Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
     Select-Object -ExpandProperty OwningProcess -Unique |
     ForEach-Object { if ($_ -gt 0) { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }
 }
 ```
 
-Запуск с учётом незакрытых сеансов (сначала освобождает те же порты, затем поднимает Compose и fgislk):
+Запуск или полный перезапуск (сначала освобождает порты):
 
 ```powershell
-# остановить контейнеры (данные БД не удаляются)
 docker compose down
-# освободить порты, если после закрытия окна процесс ещё жив
-foreach ($port in 8080, 8081, 8082, 5433) {
+foreach ($port in 8080, 8081, 8082, 8083, 5433) {
   Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
     Select-Object -ExpandProperty OwningProcess -Unique |
     ForEach-Object { if ($_ -gt 0) { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }
 }
-# собрать и запустить контейнеры db / migrate / admin
+# db / migrate / api / admin
 docker compose up --build -d
-# запустить импорт fgislk на этом Windows-ПК (порт 8081)
+# дождаться 200 (иначе api в Compose ещё стартует сам, fgislk — нет)
+# curl.exe -sS -o NUL -w "%{http_code}" http://127.0.0.1:8080/ready
 powershell.exe -File ./fgislk/run.ps1
 ```
 
-Статус контейнеров: `docker compose ps`. Кто слушает порт: `Get-NetTCPConnection -LocalPort 8081 -State Listen`.
+После перезагрузки Windows: Docker Desktop → из корня `docker compose up -d` (без `--build`, если код не менялся) → 200 на `http://127.0.0.1:8080/ready` → снова `powershell.exe -File ./fgislk/run.ps1`. Контейнеры с `restart: unless-stopped` часто уже `Up`; `fgislk` на хосте сам не поднимается.
+
+Только один процесс, migrate уже 200:
+
+```powershell
+docker compose restart api
+docker compose restart admin
+# fgislk на хосте: освободить 8081, затем run.ps1
+```
+
+Статус: `docker compose ps`. Порт: `Get-NetTCPConnection -LocalPort 8081 -State Listen`. Проверки: 8080 `/ready`, 8081 `/ready`, 8083 `/ready`, 8082 `/health`.
 
 ## Публикация на пустой Ubuntu
 
 Одна виртуалка Ubuntu 22.04/24.04 (лучше 24.04). Вход по **RDP** (рабочий стол) или SSH, обычный пользователь с `sudo`. Код только из git, не копировать папку с Windows.
 
-На сервере: `db`, `migrate`, `admin` — Docker Compose; `fgislk` — **на хосте** (`FGIS_TLS=openssl` и gost-engine). Профиль Compose `container` для fgislk не использовать. Витрину снаружи без нужды не открывать: при RDP достаточно Firefox **на этой Ubuntu** → [http://127.0.0.1:8082/](http://127.0.0.1:8082/).
+На сервере: `db`, `migrate`, `api`, `admin` — Docker Compose; `fgislk` — **на хосте** (`FGIS_TLS=openssl` и gost-engine). Профиль Compose `container` для fgislk не использовать. Витрину снаружи без нужды не открывать: при RDP достаточно Firefox **на этой Ubuntu** → [http://127.0.0.1:8082/](http://127.0.0.1:8082/).
 
 Репозиторий публичный: `https://github.com/AversIgor/dbms.git`, ветка `main`. `.env` и `fgislk-settings.json` в git нет — после clone их создаёте сами, секреты не коммитить.
 
@@ -101,26 +126,28 @@ nano .env
 chmod 600 .env
 ```
 
-Задать свои значения (не из разработки): `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST=127.0.0.1`, `POSTGRES_PORT=5433`, `MIGRATE_PORT=8080`, `ADMIN_PORT=8082`, `FGISLK_PORT=8081`, `FGIS_TLS=openssl`, `FGIS_MAX_WORKERS=10`, `FGIS_LOGIN`, `FGIS_PASSWORD`. `FGIS_TLS=openssl` сам по себе handshake не чинит — нужен gost-engine (шаг 5). Для контейнера `migrate` Compose подставляет хост `db` и порт `5432`; для `fgislk` на хосте в файле нужны `127.0.0.1` и проброшенный `POSTGRES_PORT`.
+Задать свои значения (не из разработки): `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST=127.0.0.1`, `POSTGRES_PORT=5433`, `MIGRATE_PORT=8080`, `ADMIN_PORT=8082`, `API_PORT=8083`, `FGISLK_PORT=8081`, `FGIS_TLS=openssl`, `FGIS_MAX_WORKERS=10`, `FGIS_LOGIN`, `FGIS_PASSWORD`. `FGIS_TLS=openssl` сам по себе handshake не чинит — нужен gost-engine (шаг 5). Для контейнеров `migrate`/`api` Compose подставляет хост `db` и порт `5432`; для `fgislk` на хосте в файле нужны `127.0.0.1` и проброшенный `POSTGRES_PORT`.
 
-### 4. Compose (`db`, `migrate`, `admin`)
+### 4. Compose (`db`, `migrate`, `api`, `admin`)
 
 ```bash
 # перейти в папку проекта
 cd ~/dbms
-# собрать и запустить контейнеры db / migrate / admin в фоне
+# собрать и запустить контейнеры db / migrate / api / admin в фоне
 docker compose up --build -d
 # показать статус контейнеров
 docker compose ps
 # проверка migrate: должно быть 200
 curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/ready
+# проверка api: должно быть 200
+curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8083/ready
 # проверка admin: должно быть 200
 curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8082/health
 ```
 
-Оба раза `200`. Данные Postgres — том `pgdata`, переживает `docker compose down`. `migrate` при старте делает `upgrade`. Не масштабировать: параллельный upgrade не запускать.
+Все три проверки — `200` (`fgislk` на этом шаге ещё нет). Данные Postgres — том `pgdata`, переживает `docker compose down`. `migrate` при старте делает `upgrade`. Не масштабировать: параллельный upgrade не запускать.
 
-**Не публиковать Postgres в интернет.** Не открывать снаружи 5433, 8080, 8081, 8082.
+**Не публиковать Postgres в интернет.** Не открывать снаружи 5433, 8080, 8081, 8082, 8083.
 
 Если включаете `ufw` при доступе по **RDP**, сначала разрешите 3389, иначе сеанс отвалится:
 
@@ -243,7 +270,7 @@ sudo ufw allow 443/tcp
 
 На сервере **не коммитить и не править код**. `.env` при `git pull` не затирается (файла нет в git). Локальные правки на виртуалке мешают pull — их не делать.
 
-Порядок: бэкап → стоп процессов → новый код → пересборка контейнеров (схема через `migrate`) → переустановка `fgislk` → старт процесса → проверка. `install_gost_engine.sh` при обновлении **не** запускать — это шаг один раз при первой выкладке.
+Порядок: бэкап → стоп процессов → новый код → пересборка контейнеров (схема через `migrate`, затем `api`/`admin`) → переустановка `fgislk` → старт процесса → проверка. `install_gost_engine.sh` при обновлении **не** запускать — это шаг один раз при первой выкладке.
 
 ```bash
 # перейти в папку проекта
@@ -256,14 +283,14 @@ docker compose exec -T db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > ~/dbms-ba
 
 # остановить импорт fgislk (служба systemd); если службы нет — не ошибка
 sudo systemctl stop dbms-fgislk 2>/dev/null || true
-# остановить контейнеры db / migrate / admin (данные Postgres в томе остаются)
+# остановить контейнеры db / migrate / api / admin (данные Postgres в томе остаются)
 docker compose down
-# убить всё, что ещё слушает порты системы (8080 migrate, 8081 fgislk, 8082 admin, 5433 БД)
-for p in 8080 8081 8082 5433; do
+# убить всё, что ещё слушает порты системы (8080 migrate, 8081 fgislk, 8082 admin, 8083 api, 5433 БД)
+for p in 8080 8081 8082 8083 5433; do
   sudo fuser -k "${p}/tcp" 2>/dev/null || true
 done
 # проверить: список должен быть пустой (порты свободны)
-ss -lptn "sport = :8080 or sport = :8081 or sport = :8082 or sport = :5433"
+ss -lptn "sport = :8080 or sport = :8081 or sport = :8082 or sport = :8083 or sport = :5433"
 
 # репозиторий публичный: логин GitHub не нужен; сбросить URL без сохранённого имени
 git remote set-url origin https://github.com/AversIgor/dbms.git
@@ -287,11 +314,13 @@ sudo systemctl restart dbms-fgislk
 curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/ready
 # проверка fgislk: 200
 curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8081/ready
+# проверка api: 200
+curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8083/ready
 # проверка admin: 200
 curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8082/health
 ```
 
-Все три проверки — `200`. `--ff-only`: на сервере не создавать merge-коммиты. Если `pull` отказал — смотреть `git status`, не `git reset --hard`, пока не ясно, что теряется.
+Все четыре проверки — `200`. `--ff-only`: на сервере не создавать merge-коммиты. Если `pull` отказал — смотреть `git status`, не `git reset --hard`, пока не ясно, что теряется.
 
 Если `fetch`/`pull` пишет `HTTP 401` и спрашивает `Password for 'https://…@github.com'`: **пароль аккаунта GitHub сюда не подходит**. Репозиторий публичный — сначала команды с `set-url` и `GIT_TERMINAL_PROMPT=0` выше; в запросе имени нажать Ctrl+C, не вводить логин.
 
@@ -315,18 +344,18 @@ chmod 600 ~/.git-credentials 2>/dev/null || true
 
 ### 8. После перезагрузки Ubuntu
 
-Код и `.env` не трогать. `install_gost_engine.sh` не запускать. Порядок: Compose → дождаться `migrate` → `fgislk`. Стартовать `fgislk` до `200` на `/ready` нельзя: упадёт с `SchemaMismatch` / `Server disconnected`.
+Код и `.env` не трогать. `install_gost_engine.sh` не запускать. Порядок: Compose (`db`, `migrate`, `api`, `admin`) → дождаться `migrate` → `fgislk`. Стартовать `fgislk` до `200` на `/ready` нельзя: упадёт с `SchemaMismatch` / `Server disconnected`.
 
 ```bash
 # перейти в папку проекта
 cd ~/dbms
 # поднять контейнеры (без пересборки образов)
 docker compose up -d
-# дождаться Up (healthy) у db / migrate / admin
+# дождаться Up (healthy) у db / migrate / api / admin
 docker compose ps
 ```
 
-`db`, `migrate`, `admin` — `Up (healthy)`. Том `pgdata` после reboot поднимается не сразу.
+`db`, `migrate`, `api`, `admin` — `Up (healthy)`. Том `pgdata` после reboot поднимается не сразу.
 
 ```bash
 # migrate готов только при 200; иначе подождать и повторить
@@ -353,15 +382,17 @@ cd ~/dbms
 fgislk serve
 ```
 
-Все три — `200`:
+Все четыре — `200`:
 
 ```bash
 # проверка migrate: 200
 curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/ready
 # проверка fgislk: 200
 curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8081/ready
+# проверка api: 200
+curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8083/ready
 # проверка admin: 200
 curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8082/health
 ```
 
-Витрина: Firefox на этой Ubuntu → [http://127.0.0.1:8082/](http://127.0.0.1:8082/). Чтобы `fgislk` поднимался сам: `sudo systemctl enable --now dbms-fgislk` (unit из шага 5). Compose с `restart: unless-stopped` после reboot обычно уже `Up`.
+Витрина: Firefox на этой Ubuntu → [http://127.0.0.1:8082/](http://127.0.0.1:8082/). Чтобы `fgislk` поднимался сам: `sudo systemctl enable --now dbms-fgislk` (unit из шага 5). Compose с `restart: unless-stopped` после reboot обычно уже `Up`. Только `api`/`admin`: `docker compose restart api` / `docker compose restart admin` (migrate уже 200).

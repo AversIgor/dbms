@@ -746,10 +746,10 @@ async def run_subjects(
     quarter_id: str | None = None,
 ) -> None:
     targets = subjects if subjects is not None else all_subjects()
-    semaphore = asyncio.Semaphore(max_workers())
+    order = kinds if kinds is not None else list(IMPORT_ORDER)
 
-    async def one(code: str) -> None:
-        async with semaphore:
+    async def wave(code: str, wave_kind: str, slots: asyncio.Semaphore) -> None:
+        async with slots:
             await run_subject(
                 engine=engine,
                 spd=spd,
@@ -758,20 +758,27 @@ async def run_subjects(
                 audit=audit,
                 require_lock=require_lock,
                 audit_from=audit_from,
-                kinds=kinds,
+                kinds=[wave_kind],
                 need_area=need_area,
                 quarter_id=quarter_id,
             )
 
-    tasks = [running.track(asyncio.create_task(one(code))) for code in targets]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    for item in results:
-        if isinstance(item, AlreadyRunning) and require_lock and len(targets) == 1:
-            raise item
-        if isinstance(item, BaseException) and not isinstance(
-            item, (AlreadyRunning, asyncio.CancelledError)
-        ):
-            log.exception("фоновый импорт", exc_info=item)
+    for kind in order:
+        if running.halted():
+            return
+        slots = asyncio.Semaphore(max_workers())
+        tasks = [
+            running.track(asyncio.create_task(wave(code, kind, slots)))
+            for code in targets
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for item in results:
+            if isinstance(item, AlreadyRunning) and require_lock and len(targets) == 1:
+                raise item
+            if isinstance(item, BaseException) and not isinstance(
+                item, (AlreadyRunning, asyncio.CancelledError)
+            ):
+                log.exception("фоновый импорт", exc_info=item)
 
 
 async def daily_loop(
