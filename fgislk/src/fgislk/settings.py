@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import json
 import os
 import sys
 from pathlib import Path
 from urllib.parse import quote
 
+import httpx
 from dotenv import load_dotenv
 
-REQUIRED_SCHEMA = "0001_initial"
+REQUIRED_SCHEMA = "0002_constant"
 KIND_QUARTERS = "quarters"
 KIND_TAXATION_PIECE = "taxation_piece"
 KIND_CLEARCUT = "clearcut"
@@ -29,25 +29,6 @@ KIND_TABLE = {
     KIND_TAXATION_PIECE: "taxation_piece",
     KIND_CLEARCUT: "clearcut",
 }
-DEFAULT_MAX_WORKERS = 5
-DEFAULT_BATCH_WORKERS = 3
-ALLOWED_SETTINGS = (
-    "FGIS_MAX_WORKERS",
-    "FGIS_BATCH_WORKERS",
-    "FGIS_TLS",
-    "FGIS_HOST",
-)
-_SECRET_KEYS = frozenset(
-    {
-        "FGIS_LOGIN",
-        "FGIS_PASSWORD",
-        "POSTGRES_USER",
-        "POSTGRES_PASSWORD",
-        "POSTGRES_DB",
-        "POSTGRES_HOST",
-        "POSTGRES_PORT",
-    }
-)
 
 _DB_KEYS = (
     "POSTGRES_USER",
@@ -58,8 +39,6 @@ _DB_KEYS = (
 )
 
 _loaded = False
-_overlay: dict[str, str] = {}
-_overlay_loaded = False
 
 
 def load_settings() -> None:
@@ -83,46 +62,6 @@ def load_settings() -> None:
         load_dotenv(candidate, override=False)
         break
     _loaded = True
-    refresh_overlay()
-
-
-def overlay_file() -> Path:
-    load_settings()
-    raw = os.environ.get("FGISLK_SETTINGS_FILE", "").strip()
-    if raw:
-        return Path(raw)
-    return Path.cwd() / "fgislk-settings.json"
-
-
-def refresh_overlay() -> None:
-    global _overlay, _overlay_loaded
-    raw = os.environ.get("FGISLK_SETTINGS_FILE", "").strip()
-    path = Path(raw) if raw else Path.cwd() / "fgislk-settings.json"
-    _overlay = {}
-    _overlay_loaded = True
-    if not path.is_file():
-        return
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
-    if not isinstance(data, dict):
-        return
-    for key in ALLOWED_SETTINGS:
-        if key not in data:
-            continue
-        value = data[key]
-        if value is None:
-            continue
-        _overlay[key] = str(value).strip()
-
-
-def _effective(key: str) -> str | None:
-    load_settings()
-    if key in _overlay:
-        return _overlay[key]
-    raw = os.environ.get(key)
-    return raw
 
 
 def _require_db_env() -> dict[str, str]:
@@ -149,18 +88,42 @@ def database_url() -> str:
 
 def migrate_url() -> str:
     load_settings()
-    url = os.environ.get("MIGRATE_URL", "http://127.0.0.1:8080").rstrip("/")
-    return url
+    return os.environ.get("MIGRATE_URL", "http://127.0.0.1:8080").rstrip("/")
+
+
+def constants_url() -> str:
+    load_settings()
+    return os.environ.get("CONSTANTS_URL", "http://127.0.0.1:8084").rstrip("/")
+
+
+def _constant(key: str):
+    url = f"{constants_url()}/items/{key}"
+    try:
+        response = httpx.get(url, timeout=10.0)
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"constants недоступен: {exc.__class__.__name__}") from exc
+    if response.status_code == 404:
+        raise RuntimeError(f"нет константы {key}")
+    if response.status_code != 200:
+        raise RuntimeError(f"constants {key}: HTTP {response.status_code}")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"constants {key}: не JSON") from exc
+    if not isinstance(data, dict) or "value" not in data:
+        raise RuntimeError(f"constants {key}: нет value")
+    return data["value"]
 
 
 def fgis_host() -> str:
-    raw = (_effective("FGIS_HOST") or "fgislk.gov.ru").strip()
-    return raw or "fgislk.gov.ru"
+    raw = str(_constant("FGIS_HOST") or "").strip()
+    if not raw:
+        raise RuntimeError("FGIS_HOST пустой")
+    return raw
 
 
 def fgis_tls() -> str:
-    """schannel — Windows curl.exe; openssl — Linux curl + gost-engine. Пусто — по ОС."""
-    raw = (_effective("FGIS_TLS") or "").strip().lower()
+    raw = str(_constant("FGIS_TLS") or "").strip().lower()
     if raw in {"schannel", "openssl"}:
         return raw
     if raw:
@@ -169,31 +132,32 @@ def fgis_tls() -> str:
 
 
 def fgis_credentials() -> tuple[str, str]:
-    load_settings()
-    login = os.environ.get("FGIS_LOGIN", "").strip()
-    password = os.environ.get("FGIS_PASSWORD", "")
+    login = str(_constant("FGIS_LOGIN") or "").strip()
+    password = str(_constant("FGIS_PASSWORD") or "")
     if not login or not password:
-        raise RuntimeError("Задайте FGIS_LOGIN и FGIS_PASSWORD в .env")
+        raise RuntimeError("Задайте FGIS_LOGIN и FGIS_PASSWORD в константах")
     return login, password
 
 
-def _positive_int(key: str, default: int) -> int:
-    raw = _effective(key) or str(default)
+def _positive_int(key: str) -> int:
+    raw = _constant(key)
     try:
         value = int(raw)
-    except ValueError:
-        value = default
-    return max(1, value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{key} — целое ≥ 1") from exc
+    if value < 1:
+        raise RuntimeError(f"{key} — целое ≥ 1")
+    return value
 
 
 def max_workers() -> int:
-    """Субъектов сразу. По умолчанию 5."""
-    return _positive_int("FGIS_MAX_WORKERS", DEFAULT_MAX_WORKERS)
+    """Субъектов сразу."""
+    return _positive_int("FGIS_MAX_WORKERS")
 
 
 def batch_workers() -> int:
-    """Параллельных пачек карточек внутри субъекта. По умолчанию 3."""
-    return _positive_int("FGIS_BATCH_WORKERS", DEFAULT_BATCH_WORKERS)
+    """Параллельных пачек карточек внутри субъекта."""
+    return _positive_int("FGIS_BATCH_WORKERS")
 
 
 def http_workers() -> int:
@@ -204,86 +168,3 @@ def http_workers() -> int:
 def listen_port() -> int:
     load_settings()
     return int(os.environ.get("FGISLK_PORT", "8081"))
-
-
-def _source(key: str) -> str:
-    if key in _overlay:
-        return "overlay"
-    if os.environ.get(key):
-        return "env"
-    return "default"
-
-
-def settings_view() -> dict:
-    load_settings()
-    values = {
-        "FGIS_MAX_WORKERS": {
-            "value": max_workers(),
-            "source": _source("FGIS_MAX_WORKERS"),
-        },
-        "FGIS_BATCH_WORKERS": {
-            "value": batch_workers(),
-            "source": _source("FGIS_BATCH_WORKERS"),
-        },
-        "FGIS_TLS": {"value": fgis_tls(), "source": _source("FGIS_TLS")},
-        "FGIS_HOST": {"value": fgis_host(), "source": _source("FGIS_HOST")},
-    }
-    return {"writable": True, "values": values}
-
-
-def _validate_updates(payload: dict) -> dict[str, str | None]:
-    if not isinstance(payload, dict):
-        raise ValueError("тело — объект JSON")
-    updates: dict[str, str | None] = {}
-    for key, value in payload.items():
-        if key in _SECRET_KEYS or key.startswith("POSTGRES_"):
-            raise ValueError(f"ключ {key} менять нельзя")
-        if key not in ALLOWED_SETTINGS:
-            raise ValueError(f"ключ {key} не из allowlist")
-        if value is None:
-            updates[key] = None
-            continue
-        text = str(value).strip()
-        if key in (
-            "FGIS_MAX_WORKERS",
-            "FGIS_BATCH_WORKERS",
-        ):
-            try:
-                number = int(text)
-            except ValueError as exc:
-                raise ValueError(f"{key} — целое ≥ 1") from exc
-            if number < 1:
-                raise ValueError(f"{key} — целое ≥ 1")
-            updates[key] = str(number)
-        elif key == "FGIS_TLS":
-            lowered = text.lower()
-            if lowered not in {"schannel", "openssl"}:
-                raise ValueError("FGIS_TLS: schannel или openssl")
-            updates[key] = lowered
-        else:
-            if not text:
-                raise ValueError("FGIS_HOST пустой")
-            if any(ch.isspace() for ch in text):
-                raise ValueError("FGIS_HOST без пробелов")
-            updates[key] = text
-    return updates
-
-
-def apply_settings(payload: dict) -> dict:
-    load_settings()
-    updates = _validate_updates(payload)
-    global _overlay
-    merged = dict(_overlay)
-    for key, value in updates.items():
-        if value is None:
-            merged.pop(key, None)
-        else:
-            merged[key] = value
-    path = overlay_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    _overlay = merged
-    return settings_view()

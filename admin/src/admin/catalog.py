@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from admin.settings import api_url, fgislk_url, migrate_url
+from admin.settings import api_url, constants_url, fgislk_url, migrate_url
 
 SPATIAL_STUB = (
     "Нет HTTP-процесса; данные в PostGIS через migrate и fgislk."
@@ -15,6 +15,11 @@ def catalog() -> list[dict]:
             "base_url": migrate_url(),
         },
         {
+            "id": "constants",
+            "title": "Константы",
+            "base_url": constants_url(),
+        },
+        {
             "id": "fgislk",
             "title": "fgislk",
             "base_url": fgislk_url(),
@@ -26,9 +31,10 @@ def catalog() -> list[dict]:
         },
         {
             "id": "spatialData",
-            "title": "Spatial data",
+            "title": "Пространственные данные",
             "base_url": None,
             "stub": SPATIAL_STUB,
+            "tables_from": "migrate",
         },
     ]
 
@@ -43,6 +49,8 @@ def public_catalog() -> list[dict]:
         }
         if section.get("stub"):
             item["stub"] = section["stub"]
+        if section.get("tables_from"):
+            item["tables_from"] = section["tables_from"]
         items.append(item)
     return items
 

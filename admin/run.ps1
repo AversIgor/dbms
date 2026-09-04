@@ -11,6 +11,9 @@ if (-not $env:FGISLK_URL) {
 if (-not $env:API_URL) {
     $env:API_URL = "http://127.0.0.1:8083"
 }
+if (-not $env:CONSTANTS_URL) {
+    $env:CONSTANTS_URL = "http://127.0.0.1:8084"
+}
 
 python -m pip install -q -e .\admin
 python -m admin serve

@@ -49,3 +49,8 @@ def fgislk_url() -> str:
 def api_url() -> str:
     load_settings()
     return os.environ.get("API_URL", "http://127.0.0.1:8083").rstrip("/")
+
+
+def constants_url() -> str:
+    load_settings()
+    return os.environ.get("CONSTANTS_URL", "http://127.0.0.1:8084").rstrip("/")

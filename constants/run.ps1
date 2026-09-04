@@ -6,9 +6,6 @@ $env:POSTGRES_HOST = "127.0.0.1"
 if (-not $env:MIGRATE_URL) {
     $env:MIGRATE_URL = "http://127.0.0.1:8080"
 }
-if (-not $env:CONSTANTS_URL) {
-    $env:CONSTANTS_URL = "http://127.0.0.1:8084"
-}
 
-python -m pip install -q -e .\fgislk
-python -m fgislk serve
+python -m pip install -q -e .\constants
+python -m constants serve

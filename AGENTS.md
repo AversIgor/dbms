@@ -7,6 +7,7 @@
 | Раздел | Папка | Читать перед правками |
 | --- | --- | --- |
 | Схема БД | `migrate/` | [`migrate/CONTEXT.md`](migrate/CONTEXT.md) |
+| Константы | `constants/` | [`constants/CONTEXT.md`](constants/CONTEXT.md) |
 | fgislk | `fgislk/` | [`fgislk/CONTEXT.md`](fgislk/CONTEXT.md) |
 | Spatial data | `spatialData/` | [`spatialData/CONTEXT.md`](spatialData/CONTEXT.md) |
 | api | `api/` | [`api/CONTEXT.md`](api/CONTEXT.md) |
@@ -34,11 +35,11 @@
 
 - одна PostGIS, не своя БД на раздел; не Kafka, Redis, gRPC, k8s «на вырост»;
 - несколько процессов, не один и не пять git-репозиториев;
-- DDL и Alembic — только `migrate`; `fgislk` и `api` не вызывают `upgrade`;
+- DDL и Alembic — только `migrate`; `constants`, `fgislk` и `api` не вызывают `upgrade`;
 - нет прикладного и картографического UI, XML, PDF и СМЭВ; `admin` — только тонкая витрина HTTP разделов, без логики импорта и без запросов к Postgres;
 - стек — раздел «Стек» в [`Архитектура.md`](Архитектура.md).
 
-Свободно внутри уже описанных границ: эндпоинты и импорт в `fgislk/`, HTTP внешним ИС в `api/`, миграции схемы в `migrate/`, витрина в `admin/`, правки `CONTEXT.md` **только того раздела, который в задаче**.
+Свободно внутри уже описанных границ: эндпоинты и импорт в `fgislk/`, HTTP констант в `constants/`, HTTP внешним ИС в `api/`, миграции схемы в `migrate/`, витрина в `admin/`, правки `CONTEXT.md` **только того раздела, который в задаче**.
 
 ## Правки
 

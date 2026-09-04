@@ -1,6 +1,6 @@
 # Схема БД (актуальная)
 
-Источник: `alembic/versions/` + `src/migrate/models.py`. Head: `0001_initial`.
+Источник: `alembic/versions/` + `src/migrate/models.py`. Head: `0002_constant`.
 
 ```mermaid
 erDiagram
@@ -62,6 +62,12 @@ erDiagram
     text error "текст ошибки"
     timestamptz ran_at "когда записали"
   }
+  constant {
+    varchar key PK "ключ"
+    varchar kind "string / number / date / boolean"
+    text value "каноническая запись"
+    varchar title "подпись"
+  }
 ```
 
 | Объект | Назначение |
@@ -72,6 +78,7 @@ erDiagram
 | `quarters` | квартал: семантика + контур, опрос лесосек, PK `fgis_id` |
 | `clearcut` | лесосека: семантика + контур, `limitation_dt` date, PK `fgis_id` |
 | `fgis_import_history` | журнал прогонов fgislk |
+| `constant` | прикладные настройки; HTTP — раздел `constants` |
 | таблицы PostGIS (`spatial_ref_sys` и др.) | ставит расширение, не описывать в `models.py` |
 
 Связь с другими разделами — учётный номер `fgis_id` (см. [`spatialData/CONTEXT.md`](../spatialData/CONTEXT.md)). Watermark ежедневного импорта — `MAX(day)` успешных строк `fgis_import_history` по субъекту и `data_kind`. Аудит не ходит в СПД за карточкой, если `read_at` не старше 2 дней (МСК).

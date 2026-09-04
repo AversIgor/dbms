@@ -14,6 +14,7 @@ from migrate.models import Base
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 100
 MAX_DELETE_IDS = 500
+_SKIP_TABLES = frozenset({"constant"})
 
 
 def _mappers() -> dict[str, Any]:
@@ -23,6 +24,8 @@ def _mappers() -> dict[str, Any]:
 def tables_catalog() -> list[dict[str, str]]:
     items = []
     for name, mapper in _mappers().items():
+        if name in _SKIP_TABLES:
+            continue
         table = mapper.class_.__table__
         items.append({"value": name, "label": table.comment or name})
     items.sort(key=lambda item: item["value"])
@@ -30,6 +33,8 @@ def tables_catalog() -> list[dict[str, str]]:
 
 
 def _mapper(table_name: str):
+    if table_name in _SKIP_TABLES:
+        raise HTTPException(status_code=400, detail="нет такой таблицы")
     mapper = _mappers().get(table_name)
     if mapper is None:
         raise HTTPException(status_code=400, detail="нет такой таблицы")

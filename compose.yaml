@@ -47,6 +47,33 @@ services:
     deploy:
       replicas: 1
 
+  constants:
+    build: ./constants
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      MIGRATE_URL: http://migrate:8080
+      CONSTANTS_PORT: "8084"
+    ports:
+      - "${CONSTANTS_PORT:-8084}:8084"
+    depends_on:
+      migrate:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8084/ready')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
   admin:
     build: ./admin
     env_file: .env
@@ -55,12 +82,15 @@ services:
       MIGRATE_URL: http://migrate:8080
       FGISLK_URL: ${FGISLK_URL:-http://host.docker.internal:8081}
       API_URL: ${API_URL:-http://api:8083}
+      CONSTANTS_URL: http://constants:8084
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "${ADMIN_PORT:-8082}:8082"
     depends_on:
       migrate:
+        condition: service_healthy
+      constants:
         condition: service_healthy
       api:
         condition: service_healthy
@@ -114,12 +144,14 @@ services:
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
       MIGRATE_URL: http://migrate:8080
+      CONSTANTS_URL: http://constants:8084
       FGISLK_PORT: "8081"
-      FGIS_TLS: openssl
     ports:
       - "${FGISLK_PORT:-8081}:8081"
     depends_on:
       migrate:
+        condition: service_healthy
+      constants:
         condition: service_healthy
     healthcheck:
       test:

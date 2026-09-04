@@ -71,4 +71,4 @@ def migrate_url() -> str:
 
 def listen_port() -> int:
     load_settings()
-    return int(os.environ.get("API_PORT", "8083"))
+    return int(os.environ.get("CONSTANTS_PORT", "8084"))

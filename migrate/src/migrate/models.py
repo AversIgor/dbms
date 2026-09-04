@@ -2,19 +2,51 @@
 
 Новая таблица или колонка: правка здесь → `migrate revision --autogenerate`
 → проверка SQL в `alembic/versions/` → выкладка `upgrade`.
-DDL в других приложениях не дублировать. Seed в миграции не класть.
+DDL в других приложениях не дублировать. Seed в миграции не класть,
+кроме таблицы `constant` (значения из env при upgrade).
 """
 
 from datetime import date, datetime
 from decimal import Decimal
 
 from geoalchemy2 import Geometry
-from sqlalchemy import Boolean, Date, DateTime, Index, Integer, Numeric, PrimaryKeyConstraint, String, Text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Index,
+    Integer,
+    Numeric,
+    PrimaryKeyConstraint,
+    String,
+    Text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class Constant(Base):
+    """Прикладная константа. Читает и пишет только процесс constants."""
+
+    __tablename__ = "constant"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('string', 'number', 'date', 'boolean')",
+            name="constant_kind_check",
+        ),
+        {"comment": "прикладные константы"},
+    )
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True, comment="ключ")
+    kind: Mapped[str] = mapped_column(
+        String(16), comment="string / number / date / boolean"
+    )
+    value: Mapped[str] = mapped_column(Text, comment="каноническая запись")
+    title: Mapped[str | None] = mapped_column(String(200), comment="подпись")
 
 
 class TaxationPiece(Base):

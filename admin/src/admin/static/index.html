@@ -129,6 +129,8 @@
     th { background: #f4f4f4; font-weight: 700; }
     tbody tr:nth-child(even) { background: #fafafa; }
     tbody tr:hover { background: #fff8dc; }
+    .kv-editor .kv-val { min-width: 14rem; width: 100%; }
+    td.kv-input { white-space: normal; }
     span.result { max-width: 42rem; word-break: break-word; }
     tr.running { background: var(--sel) !important; }
     .pager { display: flex; align-items: center; gap: 4px; }
@@ -187,6 +189,7 @@
     .browser-form, .browser > .row { padding: 6px 8px; margin: 0; }
     .browser-table-wrap { overflow: auto; max-height: 52vh; margin: 0 8px 8px; }
     .browser-table-wrap table { margin-top: 0; }
+    .browser-inline .browser-table-wrap { max-height: calc(100vh - 16rem); margin: 0; }
     th.check, td.check { width: 2rem; text-align: center; }
     footer.taxi-status {
       padding: 2px 8px;
@@ -535,12 +538,9 @@
     }
 
     function mountTableBrowser(wrap, sectionId, table) {
+      const embed = Boolean(table.embed);
       const block = document.createElement("div");
-      const openLabel = table.open_label || table.title || "Открыть";
-      block.innerHTML = `<h3>${esc(table.title || table.id)}</h3>
-        <button type="button" class="open-browser">${esc(openLabel)}</button>`;
-      const dlg = document.createElement("dialog");
-      dlg.className = "browser";
+      block.className = embed ? "browser-inline" : "";
       const tableParam = table.table_param || "table";
       const fieldParam = table.search_field_param || "field";
       const qParam = table.search_value_param || "q";
@@ -551,15 +551,17 @@
         const lab = typeof opt === "object" ? (opt.label || v) : opt;
         return `<option value="${esc(v)}">${esc(lab)}</option>`;
       }).join("");
-      dlg.innerHTML = `<div class="browser-head">
-          <h3>${esc(table.title || table.id)}</h3>
-          <button type="button" class="close-browser">Закрыть</button>
-        </div>
+      const emptyOpt = embed ? "" : `<option value="">выберите</option>`;
+      const chrome = embed
+        ? `<h3>${esc(table.title || table.id)}</h3>`
+        : `<div class="browser-head">
+             <h3>${esc(table.title || table.id)}</h3>
+             <button type="button" class="close-browser">Закрыть</button>
+           </div>`;
+      const body = `${chrome}
         <form class="row browser-form">
           <label>${esc(table.table_label || "Таблица")}
-            <select name="${esc(tableParam)}" required>
-              <option value="">выберите</option>${tableOpts}
-            </select>
+            <select name="${esc(tableParam)}" required>${emptyOpt}${tableOpts}</select>
           </label>
           <label>Поиск по
             <select name="${esc(fieldParam)}"></select>
@@ -581,13 +583,29 @@
           <button type="button" class="del-matching" disabled>Удалить найденные</button>
           <span class="muted result"></span>
         </div>
-        <div class="browser-table-wrap muted">выберите таблицу</div>`;
-      block.appendChild(dlg);
-      wrap.appendChild(block);
+        <div class="browser-table-wrap muted">${embed ? "загрузка" : "выберите таблицу"}</div>`;
+      let shell;
+      if (embed) {
+        block.innerHTML = body;
+        wrap.appendChild(block);
+        shell = block;
+      } else {
+        const openLabel = table.open_label || table.title || "Открыть";
+        block.innerHTML = `<h3>${esc(table.title || table.id)}</h3>
+          <button type="button" class="open-browser">${esc(openLabel)}</button>`;
+        const dlg = document.createElement("dialog");
+        dlg.className = "browser";
+        dlg.innerHTML = body;
+        block.appendChild(dlg);
+        wrap.appendChild(block);
+        shell = dlg;
+        block.querySelector(".open-browser").addEventListener("click", () => dlg.showModal());
+        dlg.querySelector(".close-browser").addEventListener("click", () => dlg.close());
+      }
 
-      const form = dlg.querySelector("form");
-      const out = dlg.querySelector(".browser-table-wrap");
-      const result = dlg.querySelector(".result");
+      const form = shell.querySelector("form");
+      const out = shell.querySelector(".browser-table-wrap");
+      const result = shell.querySelector(".result");
       const fieldSelect = form.elements[fieldParam];
       const state = { total: 0, pages: 1, idField: "", loaded: false };
 
@@ -603,20 +621,20 @@
 
       function syncPager() {
         const page = Number(form.elements[pageParam].value || 1);
-        dlg.querySelector(".prev-page").disabled = !state.loaded || page <= 1;
-        dlg.querySelector(".next-page").disabled = !state.loaded || page >= state.pages;
-        dlg.querySelector(".page-info").textContent = state.loaded
+        shell.querySelector(".prev-page").disabled = !state.loaded || page <= 1;
+        shell.querySelector(".next-page").disabled = !state.loaded || page >= state.pages;
+        shell.querySelector(".page-info").textContent = state.loaded
           ? `${page} / ${state.pages}, всего ${state.total}`
           : "";
-        dlg.querySelector(".del-matching").disabled = !state.loaded || !state.total;
-        dlg.querySelector(".del-selected").disabled = true;
+        shell.querySelector(".del-matching").disabled = !state.loaded || !state.total;
+        shell.querySelector(".del-selected").disabled = true;
       }
 
       function bindPicks() {
         const all = out.querySelector(".pick-all");
         const picks = () => [...out.querySelectorAll(".pick")];
         const refreshDel = () => {
-          dlg.querySelector(".del-selected").disabled = !picks().some((el) => el.checked);
+          shell.querySelector(".del-selected").disabled = !picks().some((el) => el.checked);
         };
         if (all) {
           all.addEventListener("change", () => {
@@ -686,8 +704,6 @@
         await load();
       }
 
-      block.querySelector(".open-browser").addEventListener("click", () => dlg.showModal());
-      dlg.querySelector(".close-browser").addEventListener("click", () => dlg.close());
       form.addEventListener("submit", (ev) => {
         ev.preventDefault();
         form.elements[pageParam].value = "1";
@@ -699,23 +715,23 @@
         form.elements[qParam].value = "";
         load();
       });
-      dlg.querySelector(".prev-page").addEventListener("click", () => {
+      shell.querySelector(".prev-page").addEventListener("click", () => {
         const page = Math.max(1, Number(form.elements[pageParam].value || 1) - 1);
         form.elements[pageParam].value = String(page);
         load();
       });
-      dlg.querySelector(".next-page").addEventListener("click", () => {
+      shell.querySelector(".next-page").addEventListener("click", () => {
         const page = Number(form.elements[pageParam].value || 1) + 1;
         form.elements[pageParam].value = String(page);
         load();
       });
-      dlg.querySelector(".del-selected").addEventListener("click", () => {
+      shell.querySelector(".del-selected").addEventListener("click", () => {
         const ids = [...out.querySelectorAll(".pick:checked")].map((el) => el.value);
         if (!ids.length) return;
         if (!window.confirm(`Удалить выбранные записи (${ids.length})?`)) return;
         sendDelete({ table: form.elements[tableParam].value, ids });
       });
-      dlg.querySelector(".del-matching").addEventListener("click", () => {
+      shell.querySelector(".del-matching").addEventListener("click", () => {
         const q = String(form.elements[qParam].value || "").trim();
         if (!state.total) return;
         const warn = q
@@ -729,18 +745,117 @@
           all_matching: true,
         });
       });
+      if (embed && form.elements[tableParam].value) load();
     }
 
-    function mountTables(card, sectionId, panel) {
+    function kvValueInput(kind, value) {
+      if (kind === "boolean") {
+        const checked = value === true ? "checked" : "";
+        return `<input type="checkbox" class="kv-val" ${checked}>`;
+      }
+      if (kind === "number") {
+        const n = value == null ? "" : String(value);
+        return `<input type="number" class="kv-val" step="any" value="${esc(n)}">`;
+      }
+      if (kind === "date") {
+        return `<input type="date" class="kv-val" value="${esc(value || "")}">`;
+      }
+      return `<input type="text" class="kv-val" value="${esc(value ?? "")}">`;
+    }
+
+    function kvReadValue(kind, input) {
+      if (kind === "boolean") return input.checked;
+      if (kind === "number") {
+        const n = Number(input.value);
+        return Number.isFinite(n) ? n : input.value;
+      }
+      return input.value;
+    }
+
+    function mountKvEditor(wrap, sectionId, table) {
+      const path = table.path || "/items";
+      const save = table.save || {};
+      const savePath = (save.path || path).replace(/\/$/, "");
+      const method = (save.method || "PUT").toUpperCase();
+      const block = document.createElement("div");
+      block.className = "kv-editor";
+      block.innerHTML = `<h3>${esc(table.title || table.id)}</h3>
+        <div class="muted kv-status">загрузка</div>
+        <div class="kv-table"></div>`;
+      wrap.appendChild(block);
+      const status = block.querySelector(".kv-status");
+      const out = block.querySelector(".kv-table");
+
+      async function load() {
+        const res = await fetchJson(`/p/${sectionId}${path}`);
+        if (!res.ok) {
+          status.textContent = errorText(res);
+          out.innerHTML = "";
+          return;
+        }
+        status.textContent = "";
+        const rows = res.data && res.data.rows
+          ? res.data.rows
+          : (Array.isArray(res.data) ? res.data : []);
+        if (!rows.length) {
+          out.innerHTML = `<p class="muted">пусто</p>`;
+          return;
+        }
+        const body = rows.map((row) => {
+          const key = row.key;
+          const kind = row.kind || "string";
+          return `<tr data-key="${esc(key)}" data-kind="${esc(kind)}">
+            <td>${esc(row.title || key)}</td>
+            <td><code>${esc(key)}</code></td>
+            <td>${esc(kind)}</td>
+            <td class="kv-input">${kvValueInput(kind, row.value)}</td>
+            <td><button type="button" class="kv-save">Сохранить</button>
+                <span class="muted result"></span></td>
+          </tr>`;
+        }).join("");
+        out.innerHTML = `<table><thead><tr>
+          <th>Название</th><th>Ключ</th><th>Тип</th><th>Значение</th><th></th>
+        </tr></thead><tbody>${body}</tbody></table>`;
+        out.querySelectorAll("tr[data-key]").forEach((tr) => {
+          tr.querySelector(".kv-save").addEventListener("click", async () => {
+            const key = tr.dataset.key;
+            const kind = tr.dataset.kind;
+            const input = tr.querySelector(".kv-val");
+            const result = tr.querySelector(".result");
+            result.textContent = "…";
+            const res = await fetchJson(
+              `/p/${sectionId}${savePath}/${encodeURIComponent(key)}`,
+              {
+                method,
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ value: kvReadValue(kind, input) }),
+              }
+            );
+            result.textContent = res.ok ? `ok ${res.status}` : errorText(res);
+          });
+        });
+      }
+      load();
+    }
+
+    function mountTables(card, httpId, panel, viewId) {
       const wrap = card.querySelector(".tables");
-      if (!panel.tables || !panel.tables.length) {
+      const tables = (panel.tables || []).filter((table) => {
+        const host = table.host || httpId;
+        return host === viewId;
+      });
+      if (!tables.length) {
         wrap.innerHTML = "";
         return;
       }
       wrap.innerHTML = "";
-      panel.tables.forEach((table) => {
+      tables.forEach((table) => {
         if (table.kind === "browser") {
-          mountTableBrowser(wrap, sectionId, table);
+          mountTableBrowser(wrap, httpId, table);
+          return;
+        }
+        if (table.kind === "kv") {
+          mountKvEditor(wrap, httpId, table);
           return;
         }
         const block = document.createElement("div");
@@ -760,7 +875,7 @@
             if (value) params.set(field.name, value);
           });
           const qs = params.toString();
-          const url = `/p/${sectionId}${table.path}${qs ? "?" + qs : ""}`;
+          const url = `/p/${httpId}${table.path}${qs ? "?" + qs : ""}`;
           const res = await fetchJson(url);
           const rows = res.data && res.data.rows ? res.data.rows : (Array.isArray(res.data) ? res.data : []);
           out.innerHTML = tableHtml(rows);
@@ -786,7 +901,23 @@
         item.addEventListener("click", () => setActive(section.id));
         nav.appendChild(item);
         if (!section.has_http) {
-          root.appendChild(renderStub(section));
+          if (!section.tables_from) {
+            root.appendChild(renderStub(section));
+            continue;
+          }
+          const card = renderCard(section);
+          card.dataset.title = section.title;
+          root.appendChild(card);
+          card.querySelector("h2").innerHTML =
+            `${esc(section.title)} ${pill(null, section.tables_from)}`;
+          card.querySelector(".status").innerHTML = "";
+          const panelRes = await fetchJson(`/p/${section.tables_from}/panel`);
+          if (!panelRes.ok || !panelRes.data) {
+            card.querySelector(".tables").textContent =
+              `процесс ${section.tables_from} недоступен`;
+            continue;
+          }
+          mountTables(card, section.tables_from, panelRes.data, section.id);
           continue;
         }
         const card = renderCard(section);
@@ -803,7 +934,7 @@
         mountActions(card, section.id, panel);
         mountMethods(card, section.id, panel);
         mountStatus(card, section.id, panel);
-        mountTables(card, section.id, panel);
+        mountTables(card, section.id, panel, section.id);
         await refreshStatus(card, section.id, panel);
         setInterval(() => refreshStatus(card, section.id, panel), 5000);
       }

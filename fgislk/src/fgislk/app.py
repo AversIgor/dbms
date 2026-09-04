@@ -4,7 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import date
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 
 from fgislk import __version__
@@ -15,8 +15,6 @@ from fgislk.settings import (
     IMPORT_ORDER,
     KIND_CLEARCUT,
     REQUIRED_SCHEMA,
-    apply_settings,
-    settings_view,
 )
 from fgislk.spd import SpdClient
 from fgislk.store import (
@@ -145,25 +143,6 @@ def history(
     kind = (data_kind or "").strip() or None
     engine = app.state.engine
     return {"rows": history_rows(engine, subject=code, data_kind=kind, limit=limit)}
-
-
-@app.get("/settings")
-def get_settings() -> dict:
-    return settings_view()
-
-
-@app.put("/settings")
-async def put_settings(request: Request):
-    try:
-        payload = await request.json()
-    except ValueError:
-        return JSONResponse(
-            status_code=400, content={"ok": False, "error": "нужен JSON"}
-        )
-    try:
-        return apply_settings(payload)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
 
 
 @app.get("/status")
