@@ -50,6 +50,8 @@ from fgislk.windows import (
 log = logging.getLogger(__name__)
 
 FLUSH_BATCH = 100
+# Карточки с контуром: меньше тел в одном curl, иначе OOM на Linux.
+AREA_BATCH = 5
 _LOCK_PING_SEC = 20.0
 
 _ROW_FROM = {
@@ -616,9 +618,14 @@ async def _import_window(
         subject, updated_count=upserted, changed_total=fgis_count
     )
     db_lock = asyncio.Lock()
-    inner = asyncio.Semaphore(batch_workers())
+    cursor = 0
+    cursor_lock = asyncio.Lock()
+    total = len(to_fetch)
+    http_batch = AREA_BATCH if need_area else FLUSH_BATCH
+    n_chunks = (total + FLUSH_BATCH - 1) // FLUSH_BATCH if total else 0
+    n_workers = min(batch_workers(), n_chunks) if n_chunks else 0
 
-    async def flush_chunk(chunk: list[str]) -> None:
+    async def flush_http(chunk: list[str]) -> None:
         nonlocal upserted
         payloads: list[dict[str, Any] | None] | None = None
         for attempt in range(3):
@@ -641,6 +648,7 @@ async def _import_window(
         rows = await asyncio.to_thread(
             _rows_from_payloads, kind, subject, chunk, payloads, today
         )
+        payloads.clear()
         async with db_lock:
             if not running.same_gen(gen) or running.halted():
                 raise asyncio.CancelledError
@@ -650,7 +658,18 @@ async def _import_window(
                     upserted += len(rows)
                 conn.commit()
                 await running.update(subject, updated_count=upserted)
-                if commit_every is not None and history_day is not None:
+
+    async def process_chunk(chunk: list[str]) -> None:
+        for offset in range(0, len(chunk), http_batch):
+            if not running.same_gen(gen) or running.halted():
+                raise asyncio.CancelledError
+            await flush_http(chunk[offset : offset + http_batch])
+        async with db_lock:
+            if not running.same_gen(gen) or running.halted():
+                raise asyncio.CancelledError
+            await running.update(subject, updated_count=upserted)
+            if commit_every is not None and history_day is not None:
+                with engine.connect() as conn:
                     write_history(
                         conn,
                         subject=subject,
@@ -663,16 +682,19 @@ async def _import_window(
                         period_end=end,
                     )
 
-    async def one(offset: int) -> None:
-        async with inner:
-            if not running.same_gen(gen) or running.halted():
-                raise asyncio.CancelledError
-            await asyncio.sleep(0)
-            await flush_chunk(to_fetch[offset : offset + FLUSH_BATCH])
+    async def worker() -> None:
+        nonlocal cursor
+        while True:
+            async with cursor_lock:
+                if cursor >= total:
+                    return
+                start_at = cursor
+                cursor += FLUSH_BATCH
+                chunk = to_fetch[start_at:cursor]
+            await process_chunk(chunk)
 
-    await asyncio.gather(
-        *[one(offset) for offset in range(0, len(to_fetch), FLUSH_BATCH)]
-    )
+    if n_workers:
+        await asyncio.gather(*[worker() for _ in range(n_workers)])
     await running.update(subject, updated_count=upserted)
     return upserted
 
@@ -685,12 +707,15 @@ def _rows_from_payloads(
     today: date,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for fgis_id, payload in zip(chunk, payloads, strict=True):
+    for index, (fgis_id, payload) in enumerate(
+        zip(chunk, payloads, strict=True)
+    ):
         if not payload:
             continue
         row = _ROW_FROM[kind](subject, fgis_id, payload)
         row["read_at"] = today
         rows.append(row)
+        payloads[index] = None
     return rows
 
 

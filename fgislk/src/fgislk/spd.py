@@ -23,6 +23,7 @@ from fgislk.mapper import ids_from_clearcut_list, ids_from_payload
 _RETRY_ATTEMPTS = 3
 _TIMEOUT_SECONDS = 180
 _STATUS_MARKER = "\n__HTTPSTATUS__"
+_STATUS_MARKER_B = b"\n__HTTPSTATUS__"
 
 log = logging.getLogger(__name__)
 _active_curl: set[asyncio.subprocess.Process] = set()
@@ -153,24 +154,27 @@ def _curl_config_escape(value: str) -> str:
 
 
 def _parse_curl_stdout(stdout: bytes) -> list[tuple[int, str]]:
-    return parse_curl_responses(stdout.decode("utf-8", errors="replace"))
+    return list(_iter_curl_responses(stdout))
 
 
 def parse_curl_responses(text: str) -> list[tuple[int, str]]:
-    if _STATUS_MARKER not in text:
-        return [(0, text)]
-    parts = text.split(_STATUS_MARKER)
-    results: list[tuple[int, str]] = []
+    return list(_iter_curl_responses(text.encode("utf-8")))
+
+
+def _iter_curl_responses(stdout: bytes):
+    if _STATUS_MARKER_B not in stdout:
+        yield 0, stdout.decode("utf-8", errors="replace")
+        return
+    parts = stdout.split(_STATUS_MARKER_B)
     body = parts[0]
     for part in parts[1:]:
-        status_line, _, rest = part.partition("\n")
+        status_line, _, rest = part.partition(b"\n")
         try:
-            status = int(status_line.strip() or "0")
+            status = int(status_line.strip() or b"0")
         except ValueError:
             status = 0
-        results.append((status, body))
+        yield status, body.decode("utf-8", errors="replace")
         body = rest
-    return results
 
 
 def _curl_transfer_lines(
@@ -288,7 +292,9 @@ class SpdClient:
             url = f"{url}?{urlencode(params)}"
         return url
 
-    async def _curl_exec(self, urls: Sequence[str]) -> list[tuple[int, str]]:
+    async def _curl_raw(
+        self, urls: Sequence[str]
+    ) -> tuple[int, bytes, bytes, int]:
         if not self._curl:
             raise RuntimeError("curl не найден")
         url_list = list(urls)
@@ -329,22 +335,16 @@ class SpdClient:
                 raise
             finally:
                 _active_curl.discard(proc)
+        return proc.returncode or 0, stdout, stderr, len(url_list)
+
+    async def _curl_exec(self, urls: Sequence[str]) -> list[tuple[int, str]]:
+        url_list = list(urls)
+        code, stdout, stderr, expected = await self._curl_raw(url_list)
         parsed = await asyncio.to_thread(_parse_curl_stdout, stdout)
-        if proc.returncode not in (0, 22) and not any(
-            status for status, _ in parsed
-        ):
-            err = stderr.decode("utf-8", errors="replace").strip() or (
-                f"curl exit {proc.returncode}"
-            )
-            if "0A000410" in err or "handshake failure" in err.lower():
-                err = (
-                    f"{err}; СПД требует gost-engine: "
-                    "sudo bash fgislk/install_gost_engine.sh"
-                )
-            raise SpdError(err)
-        if len(parsed) != len(url_list):
+        _raise_if_curl_failed(code, stderr, parsed)
+        if len(parsed) != expected:
             raise SpdError(
-                f"curl ответов {len(parsed)}, ожидали {len(url_list)}"
+                f"curl ответов {len(parsed)}, ожидали {expected}"
             )
         return parsed
 
@@ -477,16 +477,21 @@ class SpdClient:
                 return await self._fill_clearcut_without_area(ids, out)
             return out
         urls = [self._url(f"{resource}/{fgis_id}", params) for fgis_id in ids]
-        parsed: list[tuple[int, str]] | None = None
+        parsed_cards: (
+            tuple[list[dict[str, Any] | None], list[str], list[int]] | None
+        ) = None
         last_error: Exception | None = None
         for _attempt in range(_RETRY_ATTEMPTS):
             try:
-                parsed = await self._curl_exec(urls)
+                code, stdout, stderr, expected = await self._curl_raw(urls)
+                parsed_cards = await asyncio.to_thread(
+                    _cards_from_curl, stdout, ids, code, stderr, expected
+                )
                 break
             except SpdError as exc:
                 last_error = exc
                 log.warning("пачка карточек СПД: %s", exc)
-        if parsed is None:
+        if parsed_cards is None:
             log.warning(
                 "пачка %s карточек недоступна, по одной: %s",
                 len(ids),
@@ -505,9 +510,7 @@ class SpdClient:
             if resource == "clearcut" and need_area:
                 return await self._fill_clearcut_without_area(ids, out)
             return out
-        out, retry_ids, retry_at = await asyncio.to_thread(
-            _cards_from_parsed, parsed, ids
-        )
+        out, retry_ids, retry_at = parsed_cards
         if retry_ids:
             recovered = await asyncio.gather(
                 *[
@@ -653,13 +656,39 @@ def _clearcut_list_from_status(
         return "fail", None
 
 
-def _cards_from_parsed(
-    parsed: list[tuple[int, str]], ids: list[str]
+def _raise_if_curl_failed(
+    returncode: int, stderr: bytes, parsed: list[tuple[int, str]]
+) -> None:
+    if returncode not in (0, 22) and not any(status for status, _ in parsed):
+        err = stderr.decode("utf-8", errors="replace").strip() or (
+            f"curl exit {returncode}"
+        )
+        if "0A000410" in err or "handshake failure" in err.lower():
+            err = (
+                f"{err}; СПД требует gost-engine: "
+                "sudo bash fgislk/install_gost_engine.sh"
+            )
+        raise SpdError(err)
+
+
+def _cards_from_curl(
+    stdout: bytes,
+    ids: list[str],
+    returncode: int,
+    stderr: bytes,
+    expected: int,
 ) -> tuple[list[dict[str, Any] | None], list[str], list[int]]:
     out: list[dict[str, Any] | None] = []
     retry_ids: list[str] = []
     retry_at: list[int] = []
-    for index, (status, body) in enumerate(parsed):
+    any_status = False
+    for status, body in _iter_curl_responses(stdout):
+        any_status = any_status or bool(status)
+        index = len(out)
+        if index >= len(ids):
+            raise SpdError(
+                f"curl ответов больше {len(ids)}, ожидали {expected}"
+            )
         kind, card = _card_from_status(status, body)
         if kind == "retry":
             retry_at.append(index)
@@ -667,6 +696,10 @@ def _cards_from_parsed(
             out.append(None)
         else:
             out.append(card)
+    if returncode not in (0, 22) and not any_status:
+        _raise_if_curl_failed(returncode, stderr, [(0, "")])
+    if len(out) != expected:
+        raise SpdError(f"curl ответов {len(out)}, ожидали {expected}")
     return out, retry_ids, retry_at
 
 
