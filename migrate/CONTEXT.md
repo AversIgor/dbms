@@ -32,6 +32,6 @@
 
 ## Архитектура решения
 
-Новая таблица: нужда в потребителе → `models.py` → `revision --autogenerate` → проверить SQL → выкладка migrate первым → затем потребитель. Ломающий дроп: сначала код без колонки, потом миграция. Реестр `/rows` — те же mapper’ы `Base`.
+Новая таблица: нужда в потребителе → `models.py` → `revision --autogenerate` → проверить SQL → выкладка migrate первым → затем потребитель. Ломающий дроп: сначала код без колонки, потом миграция. Реестр `/rows` — те же mapper’ы `Base`. `upgrade`: пустая БД — `0001_initial`; уже есть таблицы или `alembic_version` не из текущих scripts — stamp head, без CREATE.
 
 CLI: `upgrade` | `current` | `history` | `revision -m` (разработчик) | `serve` | `downgrade`.

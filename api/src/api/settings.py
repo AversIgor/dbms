@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 
-REQUIRED_SCHEMA = "0014_clearcut_limitation_dt"
+REQUIRED_SCHEMA = "0001_initial"
 
 _DB_KEYS = (
     "POSTGRES_USER",

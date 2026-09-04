@@ -8,6 +8,7 @@ import psycopg
 from alembic import command
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
+from alembic.util.exc import CommandError
 from sqlalchemy import inspect as sa_inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
@@ -125,11 +126,71 @@ def inspect_schema() -> dict:
         eng.dispose()
 
 
+_APP_TABLES = ("taxation_piece", "quarters", "clearcut", "fgis_import_history")
+
+
+def _revision_in_scripts(revision: str) -> bool:
+    script = ScriptDirectory.from_config(alembic_config())
+    try:
+        script.get_revision(revision)
+        return True
+    except CommandError:
+        return False
+
+
+def _app_tables_exist(eng: Engine | None = None) -> bool:
+    own = eng is None
+    eng = eng or make_engine()
+    try:
+        with eng.connect() as conn:
+            inspector = sa_inspect(conn)
+            return all(inspector.has_table(name) for name in _APP_TABLES)
+    finally:
+        if own:
+            eng.dispose()
+
+
+def _stamp_head() -> None:
+    head = head_revision()
+    if not head:
+        raise RuntimeError("нет head revision")
+    eng = make_engine()
+    try:
+        with eng.begin() as conn:
+            if not sa_inspect(conn).has_table("alembic_version"):
+                conn.execute(
+                    text(
+                        "CREATE TABLE alembic_version ("
+                        "version_num VARCHAR(32) NOT NULL, "
+                        "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
+                    )
+                )
+            else:
+                conn.execute(text("DELETE FROM alembic_version"))
+            conn.execute(
+                text("INSERT INTO alembic_version (version_num) VALUES (:v)"),
+                {"v": head},
+            )
+    finally:
+        eng.dispose()
+
+
 def run_upgrade() -> str:
     wait_for_db()
     cfg = alembic_config()
     try:
-        command.upgrade(cfg, "head")
+        current = db_revision()
+        head = head_revision()
+        # Старая цепочка удалена: version_num не из scripts или таблицы уже есть — не CREATE.
+        if current == head:
+            record_upgrade(ok=True, message="ok", revision=current)
+            return current or ""
+        if (current is not None and not _revision_in_scripts(current)) or (
+            current is None and _app_tables_exist()
+        ):
+            _stamp_head()
+        else:
+            command.upgrade(cfg, "head")
         revision = db_revision()
         record_upgrade(ok=True, message="ok", revision=revision)
         return revision or ""
